@@ -74,7 +74,7 @@ export class AdminHandler {
   async testKey(id) {
     const key = this.store.getUpstreamKey(id);
     if (!key) throw Object.assign(new Error('密钥不存在'), { status: 404 });
-    const response = await fetch(`${this.config.upstreamBaseUrl}/models`, {
+    const response = await fetch(`${key.base_url}/models`, {
       headers: { authorization: `Bearer ${key.secret}`, accept: 'application/json' },
       signal: AbortSignal.timeout(Math.min(this.config.responseHeaderTimeoutMs, 30_000)),
     });
@@ -84,6 +84,7 @@ export class AdminHandler {
     }
     await response.body?.cancel();
     this.pool.report(id, 'healthy');
+    this.modelSync.sync().catch(() => {});
     return { ok: true };
   }
 
@@ -111,8 +112,9 @@ export class AdminHandler {
     }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);
-      const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''));
+      const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''));
       this.pool.reload();
+      this.modelSync.sync().catch(() => {});
       return send(res, 201, { id });
     }
     const upstream = url.pathname.match(/^\/admin\/api\/upstream-keys\/(\d+)(?:\/(test))?$/);
@@ -134,15 +136,20 @@ export class AdminHandler {
     if (url.pathname === '/admin/api/client-keys' && req.method === 'POST') {
       const body = await json(req);
       const token = randomToken('ocp_');
-      const id = this.store.addClientKey(String(body.label || ''), token);
+      const id = this.store.addClientKey(String(body.label || ''), token, body.outputTps, body.allowedOrigin);
       return send(res, 201, { id, token });
     }
-    const client = url.pathname.match(/^\/admin\/api\/client-keys\/(\d+)$/);
+    const client = url.pathname.match(/^\/admin\/api\/client-keys\/(\d+)(?:\/(reveal))?$/);
     if (client) {
       const id = Number(client[1]);
+      if (client[2] === 'reveal' && req.method === 'POST') {
+        return send(res, 200, { token: this.store.getClientKeyToken(id) });
+      }
       if (req.method === 'PATCH') {
         const body = await json(req);
-        this.store.setClientEnabled(id, Boolean(body.enabled));
+        if (body.enabled != null) this.store.setClientEnabled(id, Boolean(body.enabled));
+        if (body.outputTps != null) this.store.setClientOutputTps(id, body.outputTps);
+        if (body.allowedOrigin != null) this.store.setClientAllowedOrigin(id, body.allowedOrigin);
         return send(res, 200, { ok: true });
       }
       if (req.method === 'DELETE') {
@@ -155,6 +162,10 @@ export class AdminHandler {
     }
     if (url.pathname === '/admin/api/cache' && req.method === 'DELETE') {
       this.ledger.clear();
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {
+      this.store.clearUsage();
       return send(res, 200, { ok: true });
     }
     return send(res, 404, { error: '接口不存在' });
@@ -170,7 +181,7 @@ export class AdminHandler {
       res.writeHead(200, {
         'content-type': asset[1],
         'content-length': body.length,
-        'cache-control': asset[0] === 'admin.html' ? 'no-store' : 'public, max-age=3600',
+        'cache-control': 'no-store',
         'content-security-policy': "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
         'x-content-type-options': 'nosniff',
         'x-frame-options': 'DENY',

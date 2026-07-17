@@ -59,3 +59,40 @@ test('高并发时遵守单密钥上限并保持均匀分配', async (t) => {
   assert.deepEqual([...assigned.values()], [30, 30]);
   assert.ok([...peak.values()].every((value) => value <= 3));
 });
+
+test('外部 API 密钥不受单密钥并发上限限制', (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  store.addUpstreamKey('External', 'key-a', 'https://external.example/v1');
+  const pool = new KeyPool(store, 1);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  const first = pool.tryAcquire('model-a');
+  const second = pool.tryAcquire('model-a');
+  assert.ok(first);
+  assert.ok(second);
+  first.release();
+  second.release();
+});
+
+test('只把模型请求分配给提供该模型的 API 通道', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  store.addUpstreamKey('Ollama', 'key-a', config.upstreamBaseUrl);
+  store.addUpstreamKey('External', 'key-b', 'https://external.example/v1');
+  store.replaceModels(config.upstreamBaseUrl, [{ name: 'model-a' }, { name: 'shared' }]);
+  store.replaceModels('https://external.example/v1', [{ name: 'model-b' }, { name: 'shared' }]);
+  const pool = new KeyPool(store, 2);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  const modelB = await pool.acquire('model-b');
+  assert.equal(modelB.label, 'External');
+  modelB.release();
+  const shared = [];
+  for (let index = 0; index < 2; index += 1) {
+    const lease = await pool.acquire('shared');
+    shared.push(lease.label);
+    lease.release();
+  }
+  assert.deepEqual(shared, ['Ollama', 'External']);
+});

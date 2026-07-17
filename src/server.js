@@ -8,7 +8,7 @@ import { ProxyHandler } from './proxy.js';
 import { AdminHandler } from './admin.js';
 
 const store = new Store(config);
-config.upstreamKeys.forEach((key, index) => store.addUpstreamKey(`Env Key ${index + 1}`, key));
+config.upstreamKeys.forEach((key, index) => store.addUpstreamKey(`Env Key ${index + 1}`, key, config.upstreamBaseUrl));
 config.clientKeys.forEach((key, index) => store.addClientKey(`Env Client ${index + 1}`, key));
 
 const pool = new KeyPool(store, config.maxInflightPerKey);
@@ -32,7 +32,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith('/admin')) return void await admin.handle(req, res);
     if (url.pathname.startsWith('/v1/')) return void await proxy.handle(req, res);
     if (url.pathname === '/') {
-      const body = JSON.stringify({ name: 'Ollama Cloud Proxy', admin: '/admin', api: '/v1' });
+      const body = JSON.stringify({ name: 'Cloud API Proxy', admin: '/admin', api: '/v1' });
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
       return res.end(body);
     }
@@ -51,7 +51,7 @@ server.keepAliveTimeout = 65_000;
 server.headersTimeout = 70_000;
 server.requestTimeout = 0;
 server.listen(config.port, config.host, () => {
-  console.log(`Ollama Cloud Proxy listening on http://${config.host}:${config.port}`);
+  console.log(`Cloud API Proxy listening on http://${config.host}:${config.port}`);
   if (config.adminPassword === '123456') console.warn('警告：ADMIN_PASSWORD 正在使用默认值 123456');
   if (!config.allowAnonymous && !store.clientKeyCount()) console.warn('请登录 /admin 创建下游访问密钥');
   modelSync.start();

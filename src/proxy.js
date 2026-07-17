@@ -2,6 +2,7 @@ import { buildFingerprint, cachedTokenCount } from './cache.js';
 
 const retryable = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
 const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
+const rphOrigins = new Set(['https://sta1n156.github.io', 'https://api.sta1n.site', 'https://cdn.sta1n.cn']);
 const internalServerError400 = (status, body) => status === 400 && /\binternal server error\b/i.test(body);
 
 const jsonError = (res, status, message, type = 'proxy_error') => {
@@ -12,6 +13,62 @@ const jsonError = (res, status, message, type = 'proxy_error') => {
 };
 
 const bearer = (header = '') => header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || '';
+
+const wait = (ms, signal) => new Promise((resolve, reject) => {
+  if (ms <= 0) return resolve();
+  if (signal?.aborted) return reject(signal.reason || new Error('请求已取消'));
+  const timer = setTimeout(done, ms);
+  function done() { signal?.removeEventListener('abort', abort); resolve(); }
+  function abort() { clearTimeout(timer); reject(signal.reason || new Error('请求已取消')); }
+  signal?.addEventListener('abort', abort, { once: true });
+});
+
+function normalizeReasoning(object) {
+  let normalized = false;
+  for (const choice of object?.choices || []) {
+    for (const part of [choice.message, choice.delta]) {
+      const reasoning = part?.reasoning ?? part?.thinking;
+      if (typeof reasoning === 'string' && part.reasoning_content == null) {
+        part.reasoning_content = reasoning;
+        normalized = true;
+      }
+    }
+  }
+  return normalized;
+}
+
+function outputCharacterCount(object) {
+  const parts = [];
+  const add = (value) => {
+    if (typeof value === 'string') parts.push(value);
+    else if (Array.isArray(value)) value.forEach((item) => add(item?.text ?? item?.content));
+  };
+  for (const choice of object?.choices || []) {
+    add(choice.text);
+    add(choice.delta?.content);
+    add(choice.delta?.reasoning_content ?? choice.delta?.reasoning ?? choice.delta?.thinking);
+    for (const call of choice.delta?.tool_calls || []) add(call.function?.arguments);
+  }
+  add(object?.delta);
+  add(object?.output_text);
+  const text = parts.join('');
+  return [...text].length;
+}
+
+class TokenPacer {
+  constructor(rate, signal) {
+    this.rate = rate;
+    this.signal = signal;
+    this.nextAt = Date.now();
+  }
+
+  async pace(characters) {
+    const now = Date.now();
+    const delay = Math.max(0, this.nextAt - now);
+    this.nextAt = Math.max(this.nextAt, now) + Math.max(0, characters) * 1000 / this.rate;
+    await wait(delay, this.signal);
+  }
+}
 
 async function readBody(req, limit) {
   const chunks = [];
@@ -68,29 +125,31 @@ export function injectUsage(data, hit, totalWeight, injectCache = true) {
   try {
     object = JSON.parse(data);
   } catch {
-    return { data, usage: null, usageOnly: false };
+    return { data, usage: null, usageOnly: false, reasoningNormalized: false };
   }
+  const reasoningNormalized = normalizeReasoning(object);
   const usage = usageFromObject(object, hit, totalWeight, injectCache);
   const usageOnly = Boolean(usage && Array.isArray(object.choices) && object.choices.length === 0);
-  return { data: JSON.stringify(object), usage, usageOnly };
+  return { data: JSON.stringify(object), usage, usageOnly, reasoningNormalized };
 }
 
-function patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache) {
+function patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache, countOutput = false) {
   const lines = event.replace(/\r\n/g, '\n').split('\n');
   const dataLines = lines.filter((line) => line.startsWith('data:'));
-  if (!dataLines.length) return { event, usage: null, usageOnly: false, done: false };
+  if (!dataLines.length) return { event, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
   const data = dataLines.map((line) => line.slice(5).trimStart()).join('\n');
-  if (data === '[DONE]') return { event, usage: null, usageOnly: false, done: true };
+  if (data === '[DONE]') return { event, usage: null, usageOnly: false, done: true, outputCharacters: 0 };
   const patched = injectUsage(data, hit, totalWeight, injectCache);
   let object;
   try { object = JSON.parse(patched.data); } catch { object = null; }
   const done = object?.type === 'response.completed' || object?.response?.status === 'completed';
-  if (!patched.usage) return { event, usage: null, usageOnly: false, done };
-  if (patched.usageOnly && !forwardUsage) return { event: '', usage: patched.usage, usageOnly: true, done };
+  const outputCharacters = countOutput ? outputCharacterCount(object) : 0;
+  if (!patched.usage && !patched.reasoningNormalized) return { event, usage: null, usageOnly: false, done, outputCharacters };
+  if (patched.usageOnly && !forwardUsage) return { event: '', usage: patched.usage, usageOnly: true, done, outputCharacters };
   const rebuilt = lines.filter((line) => !line.startsWith('data:'));
   const insertAt = rebuilt.findIndex((line) => line === '');
   rebuilt.splice(insertAt < 0 ? rebuilt.length : insertAt, 0, `data: ${patched.data}`);
-  return { event: rebuilt.join('\n'), usage: patched.usage, usageOnly: patched.usageOnly, done };
+  return { event: rebuilt.join('\n'), usage: patched.usage, usageOnly: patched.usageOnly, done, outputCharacters };
 }
 
 function copyRequestHeaders(req, secret) {
@@ -103,14 +162,13 @@ function copyRequestHeaders(req, secret) {
   return headers;
 }
 
-function copyResponseHeaders(upstream, res, hit) {
+function copyResponseHeaders(upstream, res, hit, localCache) {
   for (const [name, value] of upstream.headers) {
-    if (!hopByHop.has(name.toLowerCase())) res.setHeader(name, value);
+    if (!hopByHop.has(name.toLowerCase()) && !name.toLowerCase().startsWith('access-control-')) res.setHeader(name, value);
   }
-  res.setHeader('x-proxy-cache', hit.matched ? 'HIT' : 'MISS');
-  if (hit.matched) res.setHeader('x-proxy-cache-type', hit.exact ? 'exact' : 'prefix');
-  res.setHeader('x-proxy-cache-source', 'proxy-simulated');
-  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('x-proxy-cache', localCache ? (hit.matched ? 'HIT' : 'MISS') : 'BYPASS');
+  if (localCache && hit.matched) res.setHeader('x-proxy-cache-type', hit.exact ? 'exact' : 'prefix');
+  res.setHeader('x-proxy-cache-source', localCache ? 'proxy-simulated' : 'upstream');
 }
 
 async function writeChunk(res, chunk, signal) {
@@ -150,27 +208,27 @@ export class ProxyHandler {
   authenticate(req) {
     const token = bearer(req.headers.authorization);
     if (token) {
-      const id = this.store.validateClientKey(token);
-      if (id) return id;
+      const access = this.store.getClientAccess(token);
+      if (access) return access;
       throw Object.assign(new Error('下游访问密钥无效'), { status: 401 });
     }
-    if (this.config.allowAnonymous) return null;
+    if (this.config.allowAnonymous) return { id: null, outputTps: 0, allowedOrigin: '' };
     if (!this.store.clientKeyCount()) throw Object.assign(new Error('尚未配置下游访问密钥，请先登录 /admin 创建'), { status: 503 });
     throw Object.assign(new Error('缺少下游访问密钥'), { status: 401 });
   }
 
   models(res, name = '') {
-    const models = this.store.listModels();
+    const models = [...new Map(this.store.listModels().filter((item) => item.key_count > 0).map((item) => [item.model || item.name, item])).values()];
     const convert = (item) => ({
       id: item.model || item.name,
       object: 'model',
       created: Math.floor((Date.parse(item.modified_at) || item.synced_at) / 1000),
-      owned_by: 'ollama',
+      owned_by: item.source_label || 'upstream',
     });
     const selected = name ? models.find((item) => item.model === name || item.name === name) : null;
     if (name && !selected) return jsonError(res, 404, `模型不存在：${name}`, 'invalid_request_error');
     const body = JSON.stringify(selected ? convert(selected) : { object: 'list', data: models.map(convert) });
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body), 'access-control-allow-origin': '*' });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
   }
 
@@ -178,19 +236,27 @@ export class ProxyHandler {
     const started = Date.now();
     const url = new URL(req.url, 'http://proxy.local');
     if (req.method === 'OPTIONS') {
+      const origin = rphOrigins.has(req.headers.origin) ? req.headers.origin : '*';
       res.writeHead(204, {
-        'access-control-allow-origin': '*',
+        'access-control-allow-origin': origin,
         'access-control-allow-headers': 'authorization, content-type',
         'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-max-age': '600',
       });
       return res.end();
     }
-    let clientKeyId;
+    let clientAccess;
     try {
-      clientKeyId = this.authenticate(req);
+      clientAccess = this.authenticate(req);
     } catch (error) {
       return jsonError(res, error.status || 401, error.message, 'authentication_error');
     }
+    if (clientAccess.allowedOrigin && !rphOrigins.has(req.headers.origin)) {
+      return jsonError(res, 403, '该密钥仅允许来自白名单的请求', 'permission_error');
+    }
+    res.setHeader('access-control-allow-origin', clientAccess.allowedOrigin ? req.headers.origin : '*');
+    if (clientAccess.allowedOrigin) res.setHeader('vary', 'Origin');
+    const clientKeyId = clientAccess.id;
 
     if (req.method === 'GET' && url.pathname === '/v1/models') return this.models(res);
     if (req.method === 'GET' && url.pathname.startsWith('/v1/models/')) return this.models(res, decodeURIComponent(url.pathname.slice(11)));
@@ -211,9 +277,7 @@ export class ProxyHandler {
     const clientWantsUsage = includeUsage(request);
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
     const upstreamBody = forceStreamUsage ? Buffer.from(JSON.stringify(forceUsage(request, url.pathname))) : raw;
-    const cacheable = ['/v1/chat/completions', '/v1/responses', '/v1/completions'].includes(url.pathname);
-    const fingerprint = buildFingerprint(url.pathname, request, this.store.masterKey);
-    const hit = cacheable ? this.ledger.lookup(fingerprint, model) : { matched: false, exact: false, weight: 0, observedTokens: 0 };
+    const supportsLocalCache = ['/v1/chat/completions', '/v1/responses', '/v1/completions'].includes(url.pathname);
     const excluded = new Set();
     const controller = new AbortController();
     req.once('aborted', () => controller.abort(new Error('客户端已断开')));
@@ -236,7 +300,7 @@ export class ProxyHandler {
           lease = await this.pool.acquire(model, excluded, controller.signal);
         }
         excluded.add(lease.id);
-        const target = `${this.config.upstreamBaseUrl}${url.pathname.slice(3)}${url.search}`;
+        const target = `${lease.baseUrl}${url.pathname.slice(3)}${url.search}`;
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.config.responseHeaderTimeoutMs)]);
         upstream = await fetch(target, {
           method: 'POST',
@@ -247,6 +311,10 @@ export class ProxyHandler {
         });
         bufferedUpstreamBody = undefined;
         finalInternal400 = false;
+        if (lease.baseUrl !== this.store.defaultUpstreamBaseUrl) {
+          lastError = null;
+          break;
+        }
         if (upstream.status === 400) {
           bufferedUpstreamBody = await upstream.text();
           const shouldRetry = internalServerError400(upstream.status, bufferedUpstreamBody);
@@ -279,27 +347,33 @@ export class ProxyHandler {
         ordinaryFailures += 1;
       } catch (error) {
         lastError = error;
+        const external = lease?.baseUrl !== this.store.defaultUpstreamBaseUrl;
         if (lease) {
-          this.pool.report(lease.id, 'degraded', error.message, 3000);
+          if (!external) this.pool.report(lease.id, 'degraded', error.message, 3000);
           lease.release();
           lease = null;
         }
         if (controller.signal.aborted) break;
-        ordinaryFailures += 1;
+        ordinaryFailures = external ? this.config.retryCount : ordinaryFailures + 1;
       }
     }
 
     if (!upstream || !lease) {
       this.store.queueUsage({ clientKeyId, model, endpoint: url.pathname, status: 502, latencyMs: Date.now() - started, stream, error: lastError?.message });
-      return jsonError(res, 502, lastError?.message || 'Ollama Cloud 暂时不可用');
+      return jsonError(res, 502, lastError?.message || '上游 API 暂时不可用');
     }
 
-    if (finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
-    else if (upstream.status === 401 || upstream.status === 403) this.pool.report(lease.id, 'invalid', `HTTP ${upstream.status}`);
-    else if (upstream.status < 500) this.pool.report(lease.id, 'healthy');
+    const cacheable = supportsLocalCache && lease.baseUrl === this.store.defaultUpstreamBaseUrl;
+    const fingerprint = cacheable ? buildFingerprint(url.pathname, request, this.store.masterKey) : { totalWeight: 0 };
+    const hit = cacheable ? this.ledger.lookup(fingerprint, model) : { matched: false, exact: false, weight: 0, observedTokens: 0 };
+    const external = lease.baseUrl !== this.store.defaultUpstreamBaseUrl;
+    if (external && upstream.ok) this.pool.report(lease.id, 'healthy');
+    else if (!external && finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
+    else if (!external && (upstream.status === 401 || upstream.status === 403)) this.pool.report(lease.id, 'invalid', `HTTP ${upstream.status}`);
+    else if (!external && upstream.status < 500) this.pool.report(lease.id, 'healthy');
     if (upstream.ok) lastError = null;
 
-    copyResponseHeaders(upstream, res, hit);
+    copyResponseHeaders(upstream, res, hit, cacheable);
     let usage = null;
     let completed = false;
     try {
@@ -312,6 +386,7 @@ export class ProxyHandler {
             usage = mergeUsage(usage, progress.usage);
             completed ||= progress.complete;
           },
+          clientAccess.outputTps,
         );
         usage = mergeUsage(usage, streamed.usage);
         completed ||= streamed.complete;
@@ -321,6 +396,10 @@ export class ProxyHandler {
         const input = bufferedUpstreamBody ?? await upstream.text();
         const patched = upstream.ok ? injectUsage(input, hit, fingerprint.totalWeight, cacheable) : { data: input, usage: null };
         usage = patched.usage;
+        lease.release();
+        if (upstream.ok && clientAccess.outputTps && usage?.completionTokens) {
+          await wait(usage.completionTokens * 1000 / clientAccess.outputTps, controller.signal);
+        }
         completed = true;
         const body = Buffer.from(patched.data);
         res.statusCode = upstream.status;
@@ -350,9 +429,19 @@ export class ProxyHandler {
     }
   }
 
-  async pipeStream(upstream, res, hit, totalWeight, forwardUsage, injectCache, signal, onProgress) {
+  async pipeStream(upstream, res, hit, totalWeight, forwardUsage, injectCache, signal, onProgress, outputTps = 0) {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
+    const limited = Number(outputTps) > 0;
+    const pacer = limited ? new TokenPacer(Number(outputTps), signal) : null;
+    const send = limited
+      ? async (patched) => {
+          await pacer.pace(patched.outputCharacters);
+          if (patched.event) await writeChunk(res, patched.event, signal);
+        }
+      : async (patched) => {
+          if (patched.event) await writeChunk(res, patched.event, signal);
+        };
     let buffer = '';
     let usage = null;
     let complete = false;
@@ -367,20 +456,20 @@ export class ProxyHandler {
         const end = match.index + match[0].length;
         const event = buffer.slice(0, end);
         buffer = buffer.slice(end);
-        const patched = patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache);
+        const patched = patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache, limited);
         usage = mergeUsage(usage, patched.usage);
         if (patched.done || patched.usageOnly) complete = true;
         if (patched.usage || patched.done) onProgress?.({ usage, complete });
-        if (patched.event) await writeChunk(res, patched.event, signal);
+        await send(patched);
       }
     }
     buffer += decoder.decode();
     if (buffer) {
-      const patched = patchSseEvent(buffer, hit, totalWeight, forwardUsage, injectCache);
+      const patched = patchSseEvent(buffer, hit, totalWeight, forwardUsage, injectCache, limited);
       usage = mergeUsage(usage, patched.usage);
       if (patched.done || patched.usageOnly) complete = true;
       if (patched.usage || patched.done) onProgress?.({ usage, complete });
-      if (patched.event) await writeChunk(res, patched.event, signal);
+      await send(patched);
     }
     return { usage, complete };
   }

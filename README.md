@@ -1,20 +1,23 @@
 # Ollama Cloud Proxy
 
-面向 Ollama Cloud 的 OpenAI 格式转发服务。支持多密钥公平轮询、流式工具调用透传、最新模型同步、每个密钥与模型的 Token 统计，以及一小时硬盘缓存账本生成的 `cached_tokens`。
+面向 Ollama Cloud 和外部 OpenAI 兼容 API 的转发服务。支持多通道模型路由、公平轮询、流式工具调用透传、模型同步、Token 统计，以及 Ollama Cloud 一小时硬盘缓存账本生成的 `cached_tokens`。
 
 > `cached_tokens` 是本转发层生成的展示与下游计费数据，不代表 Ollama Cloud 官方缓存，也不会减少 Ollama Cloud 官方额度。
 
 ## 功能
 
 - `/v1/chat/completions`、`/v1/responses`、`/v1/completions`、`/v1/embeddings` 等 OpenAI 兼容转发
-- SSE 流式响应、tools、`tool_choice`、vision、结构化输出和 reasoning 参数透传
-- 多个 Ollama Cloud 密钥按模型公平轮询
+- SSE 流式响应、tools、`tool_choice`、vision、结构化输出和 `reasoning_content` 思考字段兼容
+- 可在后台导入多个 OpenAI 兼容 API 地址与加密密钥，按实际模型自动路由和公平轮询
 - 401/403 自动停用，429 按 `Retry-After` 冷却，临时错误自动换钥重试
 - 仅当 HTTP 400 响应包含 `Internal Server Error` 时额外重试两次，普通参数错误不会重试
-- 从 `https://ollama.com/api/tags` 定时同步最新模型
+- 同时兼容 Ollama `/api/tags` 与 OpenAI `/v1/models`，后台按 API 地址分组，下游返回全部可用模型
 - 跨模型、跨上游密钥、跨下游密钥的一小时提示词前缀命中
+- 每个下游访问密钥可独立设置输出 Token 减速器，`0` 表示不限速
+- 每个下游访问密钥可独立启用来源白名单，默认不启用；New API 必须透传浏览器的 `Origin`
+- 外部 API 不使用本地缓存、不注入缓存 token、错误不重试，状态码、响应头、响应体与 usage 直接透传
 - SQLite WAL 持久化，密钥 AES-256-GCM 加密，缓存仅保存 HMAC 哈希
-- `/admin` 管理后台与按密钥、模型统计的 Token 用量
+- `/admin` 管理后台、P95 耗时、按密钥与模型统计、下游密钥累计用量和统计清理
 - Docker、GHCR 构建工作流和 Zeabur Template YAML
 
 ## 快速开始
@@ -27,10 +30,12 @@ npm start
 
 打开 `http://localhost:8080/admin`，默认管理密钥为 `123456`。依次完成：
 
-1. 添加 Ollama Cloud API Key。
+1. 输入通道名称、OpenAI 兼容 Base URL 和 API Key，导入一个或多个上游通道。
 2. 点击测试确认密钥有效。
 3. 生成一个下游访问密钥并立即保存。
 4. 将客户端 Base URL 设置为 `http://localhost:8080/v1`。
+
+新版本会加密保存新生成的下游访问密钥，管理员可以在密钥页再次复制。旧版本只保存了不可逆哈希，升级后原有密钥仍可使用，但需要重新生成才能在后台复制。
 
 示例：
 
@@ -63,7 +68,7 @@ const response = await client.chat.completions.create({
 
 ## 缓存命中规则
 
-缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。
+本地缓存只用于默认 Ollama Cloud 通道。外部 OpenAI 兼容通道会跳过本地缓存，直接使用上游返回的 usage。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。
 
 - 完整提示词相同：`cached_tokens` 等于本次真实 `prompt_tokens`。
 - 当前请求在旧请求后继续追加消息：最长相同前缀命中。
@@ -80,6 +85,8 @@ X-Proxy-Cache-Type: exact | prefix
 X-Proxy-Cache-Source: proxy-simulated
 ```
 
+外部通道返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`。
+
 Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses API 写入 `usage.input_tokens_details.cached_tokens`。流式 Chat Completions 只有在客户端设置 `stream_options.include_usage=true` 时才向下游发送最终 usage 数据块。
 
 这两个字段是 New API 当前读取的标准缓存用量字段，因此把本服务配置为 New API 的 OpenAI 渠道时，命中量会进入 New API 的缓存 Token 计费流程。
@@ -95,7 +102,7 @@ Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses 
 | `PROXY_API_KEYS` | 空 | 可选，逗号或换行分隔的下游密钥 |
 | `ALLOW_ANONYMOUS` | `false` | 是否允许无下游密钥调用 |
 | `CACHE_TTL` | `1h` | 缓存有效期 |
-| `MAX_INFLIGHT_PER_KEY` | `32` | 单个上游密钥最大同时请求数 |
+| `MAX_INFLIGHT_PER_KEY` | `32` | 单个 Ollama Cloud 密钥最大同时请求数；外部 API 不限 |
 | `MODEL_SYNC_INTERVAL` | `10m` | 模型同步间隔 |
 | `UPSTREAM_RETRIES` | `3` | 发送响应前最多尝试的不同密钥数 |
 | `UPSTREAM_BASE_URL` | `https://ollama.com/v1` | OpenAI 兼容上游地址 |
@@ -103,6 +110,24 @@ Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses 
 | `MAX_REQUEST_BYTES` | `33554432` | 最大请求体字节数 |
 
 生产环境务必修改 `ADMIN_PASSWORD`。如果没有生成下游访问密钥且 `ALLOW_ANONYMOUS=false`，代理会拒绝 `/v1` 请求，避免公开消耗上游额度。
+
+Token 减速器设置在管理后台的“下游访问密钥”列表中，对 Ollama Cloud 和所有外部 API 通道统一生效。流式响应保持与上游同步，上游每返回一段就向下游发送一段，只在片段之间按字符数补充延时，因此是近似 token/s。设为 `0` 时跳过字数统计和限速计时，直接透传；非流式响应会按完成 token 数延迟整包返回。
+
+白名单同样设置在“下游访问密钥”列表中。启用后，请求的 `Origin` 必须是以下地址之一，缺失或不在白名单中都会返回 403：
+
+- `https://sta1n156.github.io`
+- `https://api.sta1n.site`
+- `https://cdn.sta1n.cn`
+
+经过 New API 中转时，需要在对应渠道的“请求头覆盖”中配置：
+
+```json
+{
+  "Origin": "{client_header:Origin}"
+}
+```
+
+这会把浏览器发给 New API 的原始来源继续传给本代理。New API 后台主动执行渠道测试时没有浏览器来源，因此测试按钮可能显示 403，但来自白名单的真实请求可以正常使用。白名单能阻止其他普通网页，不能防止脚本主动伪造 `Origin`。
 
 ## Docker
 
@@ -145,4 +170,4 @@ Zeabur 挂载持久卷后，重新部署时会有短暂中断。如果需要多�
 npm test
 ```
 
-测试覆盖缓存指纹、完整/前缀/跨模型命中、公平轮询、失效密钥剔除、401 换钥、工具参数透传，以及非流式和 SSE 流式 `cached_tokens` 注入。
+测试覆盖缓存指纹、完整/前缀/跨模型命中、公平轮询、多 API 模型路由、外部模型同步、外部错误与 usage 透明传递、缓存旁路、Token 减速器、数据库迁移，以及非流式和 SSE 流式 `cached_tokens` 注入。

@@ -1,0 +1,8 @@
+.git
+.github
+data
+test
+test-support
+*.log
+README.md
+zeabur-template.yaml

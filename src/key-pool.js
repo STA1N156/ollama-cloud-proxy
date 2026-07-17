@@ -23,6 +23,12 @@ export class KeyPool {
 
   reload() {
     const fresh = this.store.listUpstreamKeys({ reveal: true });
+    this.modelsBySource = new Map();
+    for (const row of this.store.listModelRoutes()) {
+      if (!this.modelsBySource.has(row.source_url)) this.modelsBySource.set(row.source_url, new Set());
+      this.modelsBySource.get(row.source_url).add(row.name);
+    }
+    this.hasModels = this.modelsBySource.size > 0;
     const seen = new Set();
     for (const row of fresh) {
       seen.add(row.id);
@@ -33,24 +39,29 @@ export class KeyPool {
     for (const id of this.keys.keys()) if (!seen.has(id)) this.keys.delete(id);
   }
 
-  eligible(key, excluded) {
-    return key.enabled && key.status !== 'invalid' && !excluded?.has(key.id) && key.cooldown_until <= Date.now();
+  eligible(key, model, excluded, sourceUrl) {
+    if (!key.enabled || key.status === 'invalid' || excluded?.has(key.id) || key.cooldown_until > Date.now()) return false;
+    if (sourceUrl) return key.base_url === sourceUrl;
+    return !this.hasModels || this.modelsBySource.get(key.base_url)?.has(model);
   }
 
-  tryAcquire(model, excluded) {
+  tryAcquire(model, excluded, sourceUrl) {
     const keys = [...this.keys.values()].sort((a, b) => a.id - b.id);
-    if (!keys.some((key) => this.eligible(key, excluded))) return null;
-    const start = this.positions.get(model) || 0;
+    if (!keys.some((key) => this.eligible(key, model, excluded, sourceUrl))) return null;
+    const positionKey = `${sourceUrl || '*'}\0${model}`;
+    const start = this.positions.get(positionKey) || 0;
     for (let offset = 0; offset < keys.length; offset += 1) {
       const index = (start + offset) % keys.length;
       const key = keys[index];
-      if (!this.eligible(key, excluded) || key.inFlight >= this.maxInflight) continue;
+      const limited = key.base_url === this.store.defaultUpstreamBaseUrl;
+      if (!this.eligible(key, model, excluded, sourceUrl) || (limited && key.inFlight >= this.maxInflight)) continue;
       key.inFlight += 1;
-      this.positions.set(model, (index + 1) % keys.length);
+      this.positions.set(positionKey, (index + 1) % keys.length);
       let released = false;
       return {
         id: key.id,
         label: key.label,
+        baseUrl: key.base_url,
         secret: key.secret,
         release: () => {
           if (released) return;
@@ -62,11 +73,11 @@ export class KeyPool {
     return undefined;
   }
 
-  async acquire(model, excluded = new Set(), signal) {
+  async acquire(model, excluded = new Set(), signal, sourceUrl) {
     while (true) {
-      const lease = this.tryAcquire(model, excluded);
+      const lease = this.tryAcquire(model, excluded, sourceUrl);
       if (lease) return lease;
-      if (lease === null) throw new Error('没有可用的 Ollama Cloud 密钥');
+      if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : `没有支持模型 ${model} 的可用上游密钥`);
       await sleep(20, signal);
     }
   }

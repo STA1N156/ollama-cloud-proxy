@@ -160,12 +160,17 @@ export class CacheLedger {
   stats() {
     this.flush();
     const stamp = Date.now();
+    this.store.db.prepare('DELETE FROM prompt_cache WHERE expires_at<=?').run(stamp);
     const row = this.store.db.prepare(`
-      SELECT COUNT(*) entries, COALESCE(SUM(weight), 0) indexed_bytes,
-        COALESCE(MIN(expires_at), 0) next_expiry
+      SELECT COUNT(*) entries, COALESCE(MIN(expires_at), 0) next_expiry
       FROM prompt_cache WHERE expires_at>?
     `).get(stamp);
-    return { entries: Number(row.entries), indexedBytes: Number(row.indexed_bytes), nextExpiry: Number(row.next_expiry) };
+    const storage = this.store.db.prepare(`
+      SELECT COALESCE(SUM(pgsize), 0) indexed_bytes FROM dbstat
+      WHERE name IN ('prompt_cache', 'prompt_cache_tokens', 'idx_cache_expiry',
+        'sqlite_autoindex_prompt_cache_1', 'sqlite_autoindex_prompt_cache_tokens_1')
+    `).get();
+    return { entries: Number(row.entries), indexedBytes: Number(storage.indexed_bytes), nextExpiry: Number(row.next_expiry) };
   }
 
   clear() {

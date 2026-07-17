@@ -24,6 +24,7 @@ const list = (name) => (process.env[name] ?? '')
   .filter(Boolean);
 
 const dataDir = path.resolve(process.env.DATA_DIR || './data');
+const upstreamBaseUrl = (process.env.UPSTREAM_BASE_URL || 'https://ollama.com/v1').replace(/\/$/, '');
 
 export const config = {
   host: process.env.HOST || '0.0.0.0',
@@ -33,8 +34,8 @@ export const config = {
   masterKeyPath: path.join(dataDir, 'master.key'),
   adminPassword: process.env.ADMIN_PASSWORD || '123456',
   allowAnonymous: bool('ALLOW_ANONYMOUS', false),
-  upstreamBaseUrl: (process.env.UPSTREAM_BASE_URL || 'https://ollama.com/v1').replace(/\/$/, ''),
-  modelSyncUrl: process.env.MODEL_SYNC_URL || 'https://ollama.com/api/tags',
+  upstreamBaseUrl,
+  modelSyncUrl: process.env.MODEL_SYNC_URL || (new URL(upstreamBaseUrl).hostname === 'ollama.com' ? 'https://ollama.com/api/tags' : `${upstreamBaseUrl}/models`),
   modelSyncIntervalMs: duration('MODEL_SYNC_INTERVAL', 10 * 60_000),
   cacheTtlMs: duration('CACHE_TTL', 60 * 60_000),
   maxInflightPerKey: integer('MAX_INFLIGHT_PER_KEY', 32),

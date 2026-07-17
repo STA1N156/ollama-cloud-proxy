@@ -4,6 +4,7 @@ import test from 'node:test';
 import { once } from 'node:events';
 import { CacheLedger } from '../src/cache.js';
 import { KeyPool } from '../src/key-pool.js';
+import { ModelSync } from '../src/model-sync.js';
 import { injectUsage, ProxyHandler } from '../src/proxy.js';
 import { Store } from '../src/store.js';
 import { tempConfig } from '../test-support/helpers.js';
@@ -14,7 +15,7 @@ const listen = async (server) => {
   return `http://127.0.0.1:${server.address().port}`;
 };
 
-test('按 New API 可识别的标准字段回报 Chat 和 Responses 缓存 token', () => {
+test('按 New API 标准回报缓存 token 和思考过程', () => {
   const hit = { matched: true, exact: true, weight: 10, observedTokens: 0 };
   const chat = injectUsage(JSON.stringify({
     usage: { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
@@ -25,6 +26,12 @@ test('按 New API 可识别的标准字段回报 Chat 和 Responses 缓存 token
     response: { usage: { input_tokens: 90, output_tokens: 6, total_tokens: 96 } },
   }), hit, 10);
   assert.equal(JSON.parse(responses.data).response.usage.input_tokens_details.cached_tokens, 90);
+
+  const reasoning = JSON.parse(injectUsage(JSON.stringify({
+    choices: [{ message: { content: '答案', reasoning: '思考过程' } }],
+  }), hit, 10).data).choices[0].message;
+  assert.equal(reasoning.reasoning, '思考过程');
+  assert.equal(reasoning.reasoning_content, '思考过程');
 });
 
 test('下游收到最终 usage 后立刻断开仍保留统计和完成状态', async () => {
@@ -53,6 +60,56 @@ test('下游收到最终 usage 后立刻断开仍保留统计和完成状态', a
     usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120, cachedTokens: 100 },
     complete: true,
   });
+});
+
+test('Token 减速器与上游同步流式输出并按字数减速', async () => {
+  const encoder = new TextEncoder();
+  const upstream = {
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning":"思考"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\ndata: [DONE]\n\n'));
+        controller.close();
+      },
+    }),
+  };
+  const writes = [];
+  const started = Date.now();
+  const proxy = new ProxyHandler({}, null, null, null);
+  const result = await proxy.pipeStream(
+    upstream, { write(chunk) { writes.push({ chunk, at: Date.now() }); return true; } },
+    { matched: false, exact: false, weight: 0, observedTokens: 0 },
+    1, true, true, new AbortController().signal, null, 20,
+  );
+  const finishedAt = Date.now();
+  assert.equal(result.usage.completionTokens, 2);
+  const output = writes.map((item) => item.chunk).join('');
+  assert.match(output, /"reasoning":"思考"/);
+  assert.match(output, /"reasoning_content":"思考"/);
+  assert.match(output, /\[DONE\]/);
+  assert.ok(writes[0].at - started < 50);
+  assert.ok(finishedAt - started >= 80);
+});
+
+test('Token 减速器为 0 时直接透传流式输出', async () => {
+  const encoder = new TextEncoder();
+  const upstream = {
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: {"choices":[{"delta":{"content":"${'字'.repeat(200)}"}}]}\n\ndata: [DONE]\n\n`));
+        controller.close();
+      },
+    }),
+  };
+  const writes = [];
+  const started = Date.now();
+  const proxy = new ProxyHandler({}, null, null, null);
+  await proxy.pipeStream(
+    upstream, { write(chunk) { writes.push(chunk); return true; } },
+    { matched: false, exact: false, weight: 0, observedTokens: 0 },
+    1, true, true, new AbortController().signal, null, 0,
+  );
+  assert.match(writes.join(''), /\[DONE\]/);
+  assert.ok(Date.now() - started < 100);
 });
 
 test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 usage', async (t) => {
@@ -93,6 +150,8 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   store.addUpstreamKey('bad', 'bad-key');
   store.addUpstreamKey('good', 'good-key');
   store.addClientKey('client', 'client-key');
+  store.addClientKey('slow', 'slow-key', 20);
+  store.addClientKey('site', 'site-key', 0, 'https://sta1n156.github.io');
   const pool = new KeyPool(store, 8);
   const ledger = new CacheLedger(store, config.cacheTtlMs);
   const proxy = new ProxyHandler(config, store, pool, ledger);
@@ -103,12 +162,32 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     ledger.close(); store.close(); config.cleanup();
   });
 
+  const preflight = await fetch(`${proxyUrl}/v1/models`, {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://sta1n156.github.io',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'authorization',
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://sta1n156.github.io');
+
+  const siteHeaders = { authorization: 'Bearer site-key' };
+  for (const origin of ['https://sta1n156.github.io', 'https://api.sta1n.site', 'https://cdn.sta1n.cn']) {
+    const response = await fetch(`${proxyUrl}/v1/models`, { headers: { ...siteHeaders, origin } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), origin);
+  }
+  assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: siteHeaders })).status, 403);
+  assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...siteHeaders, origin: 'https://example.com' } })).status, 403);
+
   const base = {
     messages: [{ role: 'system', content: '保持简洁' }, { role: 'user', content: '你好' }],
     tools: [{ type: 'function', function: { name: 'ping', parameters: { type: 'object', properties: {} } } }],
   };
-  const call = (body) => fetch(`${proxyUrl}/v1/chat/completions`, {
-    method: 'POST', headers: { authorization: 'Bearer client-key', 'content-type': 'application/json' }, body: JSON.stringify(body),
+  const call = (body, token = 'client-key') => fetch(`${proxyUrl}/v1/chat/completions`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
 
   const firstResponse = await call({ ...base, model: 'model-a', stream: false });
@@ -163,6 +242,82 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   assert.equal(Number(summary.recent[0].prompt_tokens), 140);
   assert.equal(Number(summary.recent[0].cached_tokens), 140);
   assert.ok(summary.byKeyModel.every((row) => row.key_label === 'good'));
+
+  const slowStarted = Date.now();
+  const slowResponse = await call({ ...base, model: 'model-b', stream: false }, 'slow-key');
+  await slowResponse.json();
+  assert.ok(Date.now() - slowStarted >= 80);
+});
+
+test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支持减速', async (t) => {
+  const ollamaServer = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ models: [{ name: 'ollama-model' }] }));
+  });
+  const ollamaOrigin = await listen(ollamaServer);
+  const calls = [];
+  const externalServer = http.createServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify({ object: 'list', data: [{ id: 'external-model', object: 'model', owned_by: 'external' }] }));
+    }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    calls.push(body);
+    if (body.messages[0].content === 'fail') {
+      res.writeHead(500, { 'content-type': 'application/json', 'x-upstream-error': 'kept' });
+      return res.end('{"error":{"message":"external failure"}}');
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":3}}}\n\ndata: [DONE]\n\n');
+  });
+  const externalOrigin = await listen(externalServer);
+  const config = tempConfig({
+    upstreamBaseUrl: `${ollamaOrigin}/v1`,
+    modelSyncUrl: `${ollamaOrigin}/api/tags`,
+  });
+  const store = new Store(config);
+  store.addUpstreamKey('Ollama', 'ollama-key', config.upstreamBaseUrl);
+  store.addUpstreamKey('External', 'external-key', `${externalOrigin}/v1`);
+  store.addClientKey('Slow client', 'slow-client', 20);
+  const pool = new KeyPool(store, 4);
+  const modelSync = new ModelSync(config, store, pool);
+  assert.equal(await modelSync.sync(), 2);
+  assert.deepEqual(store.listModels().map((item) => [item.source_label, item.name]).sort(), [
+    ['External', 'external-model'], ['Ollama', 'ollama-model'],
+  ]);
+  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const proxy = new ProxyHandler(config, store, pool, ledger);
+  const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
+  const proxyUrl = await listen(proxyServer);
+  t.after(() => {
+    proxyServer.close(); externalServer.close(); ollamaServer.close();
+    modelSync.stop(); ledger.close(); store.close(); config.cleanup();
+  });
+
+  const modelsResponse = await fetch(`${proxyUrl}/v1/models`, { headers: { authorization: 'Bearer slow-client' } });
+  assert.deepEqual((await modelsResponse.json()).data.map((item) => item.id).sort(), ['external-model', 'ollama-model']);
+
+  const request = (content) => fetch(`${proxyUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer slow-client', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'external-model', messages: [{ role: 'user', content }], stream: content !== 'fail', stream_options: { include_usage: true } }),
+  });
+  const failed = await request('fail');
+  assert.equal(failed.status, 500);
+  assert.equal(failed.headers.get('x-upstream-error'), 'kept');
+  assert.equal(failed.headers.get('x-proxy-cache'), 'BYPASS');
+  assert.deepEqual(await failed.json(), { error: { message: 'external failure' } });
+  assert.equal(calls.filter((item) => item.messages[0].content === 'fail').length, 1);
+
+  const started = Date.now();
+  const streamed = await request('ok');
+  const output = await streamed.text();
+  assert.ok(Date.now() - started >= 80);
+  assert.match(output, /"cached_tokens":3/);
+  assert.equal(streamed.headers.get('x-proxy-cache-source'), 'upstream');
+  assert.equal(ledger.stats().entries, 0);
 });
 
 test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {

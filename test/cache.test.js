@@ -84,3 +84,18 @@ test('支持完整命中、同模型前缀 token 和跨模型估算', (t) => {
   }, store.masterKey);
   assert.equal(ledger.lookup(continued, 'model-a').observedTokens, 90);
 });
+
+test('缓存大小统计实际哈希索引空间，不累计原始上下文长度', (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  t.after(() => { ledger.close(); store.close(); config.cleanup(); });
+
+  const fingerprint = buildFingerprint('/v1/chat/completions', {
+    messages: [{ role: 'user', content: 'x'.repeat(1024 * 1024) }],
+  }, store.masterKey);
+  ledger.register(fingerprint, 'model-a', 1000);
+  const stats = ledger.stats();
+  assert.equal(stats.entries, 1);
+  assert.ok(stats.indexedBytes < fingerprint.totalWeight / 4);
+});
