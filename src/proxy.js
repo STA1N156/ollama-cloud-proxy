@@ -2,6 +2,7 @@ import { buildFingerprint, cachedTokenCount } from './cache.js';
 
 const retryable = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
 const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
+const internalServerError400 = (status, body) => status === 400 && /\binternal server error\b/i.test(body);
 
 const jsonError = (res, status, message, type = 'proxy_error') => {
   if (res.headersSent) return res.destroy();
@@ -49,6 +50,19 @@ function usageFromObject(object, hit, totalWeight, injectCache = true) {
   return { promptTokens, completionTokens, totalTokens, cachedTokens };
 }
 
+function mergeUsage(current, next) {
+  if (!next) return current;
+  if (!current) return next;
+  const promptTokens = Math.max(current.promptTokens, next.promptTokens);
+  const completionTokens = Math.max(current.completionTokens, next.completionTokens);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: Math.max(current.totalTokens, next.totalTokens, promptTokens + completionTokens),
+    cachedTokens: Math.max(current.cachedTokens, next.cachedTokens),
+  };
+}
+
 export function injectUsage(data, hit, totalWeight, injectCache = true) {
   let object;
   try {
@@ -64,19 +78,19 @@ export function injectUsage(data, hit, totalWeight, injectCache = true) {
 function patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache) {
   const lines = event.replace(/\r\n/g, '\n').split('\n');
   const dataLines = lines.filter((line) => line.startsWith('data:'));
-  if (!dataLines.length) return { event, usage: null, done: false };
+  if (!dataLines.length) return { event, usage: null, usageOnly: false, done: false };
   const data = dataLines.map((line) => line.slice(5).trimStart()).join('\n');
-  if (data === '[DONE]') return { event, usage: null, done: true };
+  if (data === '[DONE]') return { event, usage: null, usageOnly: false, done: true };
   const patched = injectUsage(data, hit, totalWeight, injectCache);
   let object;
   try { object = JSON.parse(patched.data); } catch { object = null; }
   const done = object?.type === 'response.completed' || object?.response?.status === 'completed';
-  if (!patched.usage) return { event, usage: null, done };
-  if (patched.usageOnly && !forwardUsage) return { event: '', usage: patched.usage, done };
+  if (!patched.usage) return { event, usage: null, usageOnly: false, done };
+  if (patched.usageOnly && !forwardUsage) return { event: '', usage: patched.usage, usageOnly: true, done };
   const rebuilt = lines.filter((line) => !line.startsWith('data:'));
   const insertAt = rebuilt.findIndex((line) => line === '');
   rebuilt.splice(insertAt < 0 ? rebuilt.length : insertAt, 0, `data: ${patched.data}`);
-  return { event: rebuilt.join('\n'), usage: patched.usage, done };
+  return { event: rebuilt.join('\n'), usage: patched.usage, usageOnly: patched.usageOnly, done };
 }
 
 function copyRequestHeaders(req, secret) {
@@ -208,9 +222,19 @@ export class ProxyHandler {
     let lease;
     let upstream;
     let lastError;
-    for (let attempt = 0; attempt < this.config.retryCount; attempt += 1) {
+    let bufferedUpstreamBody;
+    let finalInternal400 = false;
+    let internal400Retries = 0;
+    let ordinaryFailures = 0;
+    while (ordinaryFailures < this.config.retryCount) {
       try {
-        lease = await this.pool.acquire(model, excluded, controller.signal);
+        try {
+          lease = await this.pool.acquire(model, excluded, controller.signal);
+        } catch (error) {
+          if (controller.signal.aborted || !excluded.size) throw error;
+          excluded.clear();
+          lease = await this.pool.acquire(model, excluded, controller.signal);
+        }
         excluded.add(lease.id);
         const target = `${this.config.upstreamBaseUrl}${url.pathname.slice(3)}${url.search}`;
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.config.responseHeaderTimeoutMs)]);
@@ -221,7 +245,29 @@ export class ProxyHandler {
           signal,
           redirect: 'manual',
         });
-        if (!retryable.has(upstream.status)) break;
+        bufferedUpstreamBody = undefined;
+        finalInternal400 = false;
+        if (upstream.status === 400) {
+          bufferedUpstreamBody = await upstream.text();
+          const shouldRetry = internalServerError400(upstream.status, bufferedUpstreamBody);
+          if (shouldRetry && internal400Retries < 2) {
+            internal400Retries += 1;
+            this.pool.report(lease.id, 'degraded', `HTTP 400: ${bufferedUpstreamBody.slice(0, 500)}`);
+            lastError = new Error('Ollama Cloud 返回 HTTP 400 Internal Server Error');
+            lease.release();
+            lease = null;
+            upstream = null;
+            bufferedUpstreamBody = undefined;
+            continue;
+          }
+          finalInternal400 = shouldRetry;
+          lastError = shouldRetry ? new Error('Ollama Cloud 连续三次返回 HTTP 400 Internal Server Error') : null;
+          break;
+        }
+        if (!retryable.has(upstream.status)) {
+          lastError = null;
+          break;
+        }
         const errorText = (await upstream.text()).slice(0, 500);
         const invalid = upstream.status === 401 || upstream.status === 403;
         const cooldown = upstream.status === 429 ? retryAfterMs(upstream) : 3000;
@@ -230,6 +276,7 @@ export class ProxyHandler {
         lease.release();
         lease = null;
         upstream = null;
+        ordinaryFailures += 1;
       } catch (error) {
         lastError = error;
         if (lease) {
@@ -238,6 +285,7 @@ export class ProxyHandler {
           lease = null;
         }
         if (controller.signal.aborted) break;
+        ordinaryFailures += 1;
       }
     }
 
@@ -246,8 +294,10 @@ export class ProxyHandler {
       return jsonError(res, 502, lastError?.message || 'Ollama Cloud 暂时不可用');
     }
 
-    if (upstream.status === 401 || upstream.status === 403) this.pool.report(lease.id, 'invalid', `HTTP ${upstream.status}`);
+    if (finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
+    else if (upstream.status === 401 || upstream.status === 403) this.pool.report(lease.id, 'invalid', `HTTP ${upstream.status}`);
     else if (upstream.status < 500) this.pool.report(lease.id, 'healthy');
+    if (upstream.ok) lastError = null;
 
     copyResponseHeaders(upstream, res, hit);
     let usage = null;
@@ -256,13 +306,19 @@ export class ProxyHandler {
       if (stream && upstream.ok && upstream.body) {
         res.statusCode = upstream.status;
         res.flushHeaders();
-        const streamed = await this.pipeStream(upstream, res, hit, fingerprint.totalWeight, clientWantsUsage, cacheable, controller.signal);
-        usage = streamed.usage;
-        completed = streamed.complete;
+        const streamed = await this.pipeStream(
+          upstream, res, hit, fingerprint.totalWeight, clientWantsUsage, cacheable, controller.signal,
+          (progress) => {
+            usage = mergeUsage(usage, progress.usage);
+            completed ||= progress.complete;
+          },
+        );
+        usage = mergeUsage(usage, streamed.usage);
+        completed ||= streamed.complete;
         if (!completed) lastError = new Error('上游流式响应未正常结束');
         res.end();
       } else {
-        const input = await upstream.text();
+        const input = bufferedUpstreamBody ?? await upstream.text();
         const patched = upstream.ok ? injectUsage(input, hit, fingerprint.totalWeight, cacheable) : { data: input, usage: null };
         usage = patched.usage;
         completed = true;
@@ -272,8 +328,8 @@ export class ProxyHandler {
         res.end(body);
       }
     } catch (error) {
-      lastError = error;
-      if (!res.writableEnded) res.destroy(error);
+      if (!completed) lastError = error;
+      if (!res.writableEnded && !res.destroyed) res.destroy(error);
     } finally {
       lease.release();
       if (cacheable && completed && upstream.ok) this.ledger.register(fingerprint, model, usage?.promptTokens || 0);
@@ -294,7 +350,7 @@ export class ProxyHandler {
     }
   }
 
-  async pipeStream(upstream, res, hit, totalWeight, forwardUsage, injectCache, signal) {
+  async pipeStream(upstream, res, hit, totalWeight, forwardUsage, injectCache, signal, onProgress) {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -312,16 +368,18 @@ export class ProxyHandler {
         const event = buffer.slice(0, end);
         buffer = buffer.slice(end);
         const patched = patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache);
-        if (patched.usage) usage = patched.usage;
-        if (patched.done) complete = true;
+        usage = mergeUsage(usage, patched.usage);
+        if (patched.done || patched.usageOnly) complete = true;
+        if (patched.usage || patched.done) onProgress?.({ usage, complete });
         if (patched.event) await writeChunk(res, patched.event, signal);
       }
     }
     buffer += decoder.decode();
     if (buffer) {
       const patched = patchSseEvent(buffer, hit, totalWeight, forwardUsage, injectCache);
-      if (patched.usage) usage = patched.usage;
-      if (patched.done) complete = true;
+      usage = mergeUsage(usage, patched.usage);
+      if (patched.done || patched.usageOnly) complete = true;
+      if (patched.usage || patched.done) onProgress?.({ usage, complete });
       if (patched.event) await writeChunk(res, patched.event, signal);
     }
     return { usage, complete };

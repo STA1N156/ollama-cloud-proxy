@@ -69,8 +69,18 @@ test('支持完整命中、同模型前缀 token 和跨模型估算', (t) => {
   const sameModel = ledger.lookup(extended, 'model-a');
   assert.equal(sameModel.exact, false);
   assert.equal(cachedTokenCount(sameModel, 90, extended.totalWeight), 50);
-
   const crossModel = ledger.lookup(extended, 'model-b');
   const estimated = cachedTokenCount(crossModel, 90, extended.totalWeight);
   assert.ok(estimated > 0 && estimated < 90);
+
+  ledger.register(extended, 'model-a', 90);
+  const continued = buildFingerprint('/v1/chat/completions', {
+    messages: [
+      { role: 'system', content: '规则' },
+      { role: 'user', content: '问题' },
+      { role: 'assistant', content: '回答' },
+      { role: 'user', content: '继续' },
+    ],
+  }, store.masterKey);
+  assert.equal(ledger.lookup(continued, 'model-a').observedTokens, 90);
 });

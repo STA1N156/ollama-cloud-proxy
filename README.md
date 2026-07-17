@@ -10,6 +10,7 @@
 - SSE 流式响应、tools、`tool_choice`、vision、结构化输出和 reasoning 参数透传
 - 多个 Ollama Cloud 密钥按模型公平轮询
 - 401/403 自动停用，429 按 `Retry-After` 冷却，临时错误自动换钥重试
+- 仅当 HTTP 400 响应包含 `Internal Server Error` 时额外重试两次，普通参数错误不会重试
 - 从 `https://ollama.com/api/tags` 定时同步最新模型
 - 跨模型、跨上游密钥、跨下游密钥的一小时提示词前缀命中
 - SQLite WAL 持久化，密钥 AES-256-GCM 加密，缓存仅保存 HMAC 哈希
