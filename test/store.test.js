@@ -67,6 +67,12 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
 
   store.clearUsage();
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 0);
+  store.setClientEnabled(id, false);
+  assert.equal(store.getClientAccess('ocp_copy_me'), null);
+  store.setClientEnabled(id, true);
+  assert.equal(store.getClientAccess('ocp_copy_me').outputTps, 12);
+  store.deleteClientKey(id);
+  assert.equal(store.getClientAccess('ocp_copy_me'), null);
 });
 
 test('旧上游和模型数据自动迁移到默认 API 地址', (t) => {
@@ -93,4 +99,16 @@ test('旧上游和模型数据自动迁移到默认 API 地址', (t) => {
   const key = store.getUpstreamKey(id);
   assert.equal(key.base_url, 'https://external.example/v1');
   assert.equal(key.secret, 'external-secret');
+});
+
+test('下游鉴权关闭数据库后仍从内存读取', () => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const id = store.addClientKey('内存密钥', 'memory-client', 15, 'https://sta1n156.github.io');
+  store.close();
+  assert.deepEqual(store.getClientAccess('memory-client'), {
+    id, outputTps: 15, allowedOrigin: 'https://sta1n156.github.io',
+  });
+  assert.equal(store.clientKeyCount(), 1);
+  config.cleanup();
 });

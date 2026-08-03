@@ -58,9 +58,9 @@ server.listen(config.port, config.host, () => {
 });
 
 const shutdown = () => {
-  server.close(() => {
+  server.close(async () => {
     modelSync.stop();
-    ledger.close();
+    await ledger.close();
     store.close();
     process.exit(0);
   });

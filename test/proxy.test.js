@@ -14,6 +14,7 @@ const listen = async (server) => {
   await once(server, 'listening');
   return `http://127.0.0.1:${server.address().port}`;
 };
+const cache = (hit, totalWeight = 1) => async () => ({ hit, fingerprint: { totalWeight } });
 
 test('按 New API 标准回报缓存 token 和思考过程', () => {
   const hit = { matched: true, exact: true, weight: 10, observedTokens: 0 };
@@ -50,8 +51,8 @@ test('下游收到最终 usage 后立刻断开仍保留统计和完成状态', a
     proxy.pipeStream(
       upstream,
       { write() { throw new Error('下游已关闭'); } },
-      { matched: true, exact: true, weight: 10, observedTokens: 0 },
-      10, true, true, new AbortController().signal,
+      cache({ matched: true, exact: true, weight: 10, observedTokens: 0 }, 10),
+      true, true, new AbortController().signal,
       (value) => { progress = value; },
     ),
     /下游已关闭/,
@@ -77,8 +78,8 @@ test('Token 减速器与上游同步流式输出并按字数减速', async () =>
   const proxy = new ProxyHandler({}, null, null, null);
   const result = await proxy.pipeStream(
     upstream, { write(chunk) { writes.push({ chunk, at: Date.now() }); return true; } },
-    { matched: false, exact: false, weight: 0, observedTokens: 0 },
-    1, true, true, new AbortController().signal, null, 20,
+    cache({ matched: false, exact: false, weight: 0, observedTokens: 0 }),
+    true, true, new AbortController().signal, null, 20,
   );
   const finishedAt = Date.now();
   assert.equal(result.usage.completionTokens, 2);
@@ -105,11 +106,52 @@ test('Token 减速器为 0 时直接透传流式输出', async () => {
   const proxy = new ProxyHandler({}, null, null, null);
   await proxy.pipeStream(
     upstream, { write(chunk) { writes.push(chunk); return true; } },
-    { matched: false, exact: false, weight: 0, observedTokens: 0 },
-    1, true, true, new AbortController().signal, null, 0,
+    cache({ matched: false, exact: false, weight: 0, observedTokens: 0 }),
+    true, true, new AbortController().signal, null, 0,
   );
   assert.match(writes.join(''), /\[DONE\]/);
   assert.ok(Date.now() - started < 100);
+});
+
+test('零限速正文不等待缓存线程，最终 usage 仍注入命中 token', async () => {
+  const encoder = new TextEncoder();
+  let upstreamController;
+  const upstream = {
+    body: new ReadableStream({
+      start(controller) {
+        upstreamController = controller;
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"先显示"}}]}\n\n'));
+      },
+    }),
+  };
+  let contentWritten;
+  const firstWrite = new Promise((resolve) => { contentWritten = resolve; });
+  let releaseCache;
+  const cacheReady = new Promise((resolve) => { releaseCache = resolve; });
+  let cacheRequested = false;
+  const writes = [];
+  const proxy = new ProxyHandler({}, null, null, null);
+  const streaming = proxy.pipeStream(
+    upstream,
+    { write(chunk) { writes.push(chunk); contentWritten(); return true; } },
+    async () => {
+      cacheRequested = true;
+      await cacheReady;
+      return { hit: { matched: true, exact: true, weight: 10, observedTokens: 0 }, fingerprint: { totalWeight: 10 } };
+    },
+    true, true, new AbortController().signal, null, 0,
+  );
+
+  await firstWrite;
+  assert.equal(cacheRequested, false);
+  assert.equal(writes.join(''), 'data: {"choices":[{"delta":{"content":"先显示"}}]}\n\n');
+  upstreamController.enqueue(encoder.encode('data: {"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":2,"total_tokens":52}}\n\ndata: [DONE]\n\n'));
+  upstreamController.close();
+  while (!cacheRequested) await new Promise((resolve) => setImmediate(resolve));
+  releaseCache();
+  const result = await streaming;
+  assert.equal(result.usage.cachedTokens, 50);
+  assert.match(writes.join(''), /"cached_tokens":50/);
 });
 
 test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 usage', async (t) => {
@@ -159,7 +201,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   const proxyUrl = await listen(proxyServer);
   t.after(async () => {
     await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
-    ledger.close(); store.close(); config.cleanup();
+    await ledger.close(); store.close(); config.cleanup();
   });
 
   const preflight = await fetch(`${proxyUrl}/v1/models`, {
@@ -197,7 +239,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   assert.equal(received[0].auth, 'Bearer bad-key');
   assert.equal(received[1].auth, 'Bearer good-key');
   assert.deepEqual(received[1].body.tools, base.tools);
-  ledger.flush();
+  await ledger.flush();
 
   const secondResponse = await call({ ...base, model: 'model-b', temperature: 1, stream: false });
   const second = await secondResponse.json();
@@ -291,9 +333,9 @@ test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支�
   const proxy = new ProxyHandler(config, store, pool, ledger);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
   const proxyUrl = await listen(proxyServer);
-  t.after(() => {
+  t.after(async () => {
     proxyServer.close(); externalServer.close(); ollamaServer.close();
-    modelSync.stop(); ledger.close(); store.close(); config.cleanup();
+    modelSync.stop(); await ledger.close(); store.close(); config.cleanup();
   });
 
   const modelsResponse = await fetch(`${proxyUrl}/v1/models`, { headers: { authorization: 'Bearer slow-client' } });
@@ -317,7 +359,7 @@ test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支�
   assert.ok(Date.now() - started >= 80);
   assert.match(output, /"cached_tokens":3/);
   assert.equal(streamed.headers.get('x-proxy-cache-source'), 'upstream');
-  assert.equal(ledger.stats().entries, 0);
+  assert.equal((await ledger.stats()).entries, 0);
 });
 
 test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {
@@ -357,7 +399,7 @@ test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {
   const proxyUrl = await listen(proxyServer);
   t.after(async () => {
     await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
-    ledger.close(); store.close(); config.cleanup();
+    await ledger.close(); store.close(); config.cleanup();
   });
 
   const call = (model) => fetch(`${proxyUrl}/v1/chat/completions`, {

@@ -20,6 +20,7 @@ export const normalizeBaseUrl = (value, fallback = 'https://ollama.com/v1') => {
 export class Store {
   constructor(config) {
     this.defaultUpstreamBaseUrl = normalizeBaseUrl(config.upstreamBaseUrl);
+    this.databasePath = config.databasePath;
     fs.mkdirSync(config.dataDir, { recursive: true });
     this.masterKey = loadOrCreateMasterKey(config.masterKeyPath);
     this.db = new DatabaseSync(config.databasePath);
@@ -143,6 +144,8 @@ export class Store {
       this.db.exec('DROP TABLE models_legacy');
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_models_source ON models(source_url)');
+    this.clientAccess = new Map();
+    this.reloadClientAccess();
     this.usageQueue = [];
     this.usageTimer = setInterval(() => this.flushUsage(), 200);
     this.usageTimer.unref();
@@ -218,7 +221,9 @@ export class Store {
         output_tps=COALESCE(?, client_keys.output_tps), allowed_origin=COALESCE(?, client_keys.allowed_origin), enabled=1
       RETURNING id
     `).get(label.trim() || `Client ${value.slice(-4)}`, sha256(value), encrypt(value, this.masterKey), value.slice(-4), normalizedRate, normalizedOrigin, now(), rate == null ? null : normalizedRate, normalizedOrigin);
-    return Number(result.id);
+    const id = Number(result.id);
+    this.reloadClientAccess(id);
+    return id;
   }
 
   listClientKeys() {
@@ -246,28 +251,46 @@ export class Store {
   }
 
   getClientAccess(token) {
-    const row = this.db.prepare('SELECT id, output_tps, allowed_origin FROM client_keys WHERE token_hash=? AND enabled=1').get(sha256(token));
-    return row ? { id: Number(row.id), outputTps: Number(row.output_tps), allowedOrigin: row.allowed_origin } : null;
+    return this.clientAccess.get(sha256(token)) || null;
   }
 
   clientKeyCount() {
-    return Number(this.db.prepare('SELECT COUNT(*) AS count FROM client_keys WHERE enabled=1').get().count);
+    return this.clientAccess.size;
+  }
+
+  reloadClientAccess(id = null) {
+    if (id == null) this.clientAccess.clear();
+    else for (const [hash, access] of this.clientAccess) {
+      if (access.id === id) this.clientAccess.delete(hash);
+    }
+    const rows = id == null
+      ? this.db.prepare('SELECT id, token_hash, output_tps, allowed_origin FROM client_keys WHERE enabled=1').all()
+      : this.db.prepare('SELECT id, token_hash, output_tps, allowed_origin FROM client_keys WHERE id=? AND enabled=1').all(id);
+    for (const row of rows) this.clientAccess.set(row.token_hash, {
+      id: Number(row.id),
+      outputTps: Number(row.output_tps),
+      allowedOrigin: row.allowed_origin,
+    });
   }
 
   setClientEnabled(id, enabled) {
     this.db.prepare('UPDATE client_keys SET enabled=? WHERE id=?').run(enabled ? 1 : 0, id);
+    this.reloadClientAccess(id);
   }
 
   setClientOutputTps(id, rate) {
     this.db.prepare('UPDATE client_keys SET output_tps=? WHERE id=?').run(outputTps(rate), id);
+    this.reloadClientAccess(id);
   }
 
   setClientAllowedOrigin(id, origin) {
     this.db.prepare('UPDATE client_keys SET allowed_origin=? WHERE id=?').run(clientOrigin(origin), id);
+    this.reloadClientAccess(id);
   }
 
   deleteClientKey(id) {
     this.db.prepare('DELETE FROM client_keys WHERE id=?').run(id);
+    this.reloadClientAccess(id);
   }
 
   queueUsage(event) {

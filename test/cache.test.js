@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildFingerprint, CacheLedger, cachedTokenCount } from '../src/cache.js';
+import { hmac256 } from '../src/crypto.js';
 import { Store } from '../src/store.js';
 import { tempConfig } from '../test-support/helpers.js';
 
@@ -39,23 +40,35 @@ test('Responses 输出 Schema 变化不会误判为命中', () => {
   );
 });
 
-test('支持完整命中、同模型前缀 token 和跨模型估算', (t) => {
+test('连续哈希只把上一段摘要带入下一段', () => {
+  const key = Buffer.alloc(32, 6);
+  const endpoint = '/v1/chat/completions';
+  const fingerprint = buildFingerprint(endpoint, {
+    messages: [{ role: 'user', content: '一' }, { role: 'assistant', content: '二' }],
+  }, key);
+  const seed = hmac256(key, `${endpoint}\u001f`);
+  const first = hmac256(key, `${seed}\u001e{"content":"一","role":"user"}`);
+  const second = hmac256(key, `${first}\u001e{"content":"二","role":"assistant"}`);
+  assert.deepEqual(fingerprint.entries.map((entry) => entry.hash), [first, second]);
+});
+
+test('支持完整命中、同模型前缀 token 和跨模型估算', async (t) => {
   const config = tempConfig();
   const store = new Store(config);
   const ledger = new CacheLedger(store, config.cacheTtlMs);
-  t.after(() => { ledger.close(); store.close(); config.cleanup(); });
+  t.after(async () => { await ledger.close(); store.close(); config.cleanup(); });
 
   const first = buildFingerprint('/v1/chat/completions', {
     messages: [{ role: 'system', content: '规则' }, { role: 'user', content: '问题' }],
   }, store.masterKey);
-  assert.equal(ledger.lookup(first, 'model-a').matched, false);
+  assert.equal((await ledger.lookup(first, 'model-a')).matched, false);
   ledger.register(first, 'model-a', 50);
 
-  const immediate = ledger.lookup(first, 'model-a');
+  const immediate = await ledger.lookup(first, 'model-a');
   assert.equal(immediate.exact, true);
   assert.equal(immediate.observedTokens, 50);
 
-  const exact = ledger.lookup(first, 'model-b');
+  const exact = await ledger.lookup(first, 'model-b');
   assert.equal(exact.exact, true);
   assert.equal(cachedTokenCount(exact, 80, first.totalWeight), 80);
 
@@ -66,10 +79,10 @@ test('支持完整命中、同模型前缀 token 和跨模型估算', (t) => {
       { role: 'assistant', content: '回答' },
     ],
   }, store.masterKey);
-  const sameModel = ledger.lookup(extended, 'model-a');
+  const sameModel = await ledger.lookup(extended, 'model-a');
   assert.equal(sameModel.exact, false);
   assert.equal(cachedTokenCount(sameModel, 90, extended.totalWeight), 50);
-  const crossModel = ledger.lookup(extended, 'model-b');
+  const crossModel = await ledger.lookup(extended, 'model-b');
   const estimated = cachedTokenCount(crossModel, 90, extended.totalWeight);
   assert.ok(estimated > 0 && estimated < 90);
 
@@ -82,20 +95,22 @@ test('支持完整命中、同模型前缀 token 和跨模型估算', (t) => {
       { role: 'user', content: '继续' },
     ],
   }, store.masterKey);
-  assert.equal(ledger.lookup(continued, 'model-a').observedTokens, 90);
+  assert.equal((await ledger.lookup(continued, 'model-a')).observedTokens, 90);
 });
 
-test('缓存大小统计实际哈希索引空间，不累计原始上下文长度', (t) => {
+test('缓存大小统计实际哈希索引空间，不累计原始上下文长度', async (t) => {
   const config = tempConfig();
   const store = new Store(config);
   const ledger = new CacheLedger(store, config.cacheTtlMs);
-  t.after(() => { ledger.close(); store.close(); config.cleanup(); });
+  t.after(async () => { await ledger.close(); store.close(); config.cleanup(); });
 
   const fingerprint = buildFingerprint('/v1/chat/completions', {
     messages: [{ role: 'user', content: 'x'.repeat(1024 * 1024) }],
   }, store.masterKey);
   ledger.register(fingerprint, 'model-a', 1000);
-  const stats = ledger.stats();
+  const stats = await ledger.stats();
   assert.equal(stats.entries, 1);
   assert.ok(stats.indexedBytes < fingerprint.totalWeight / 4);
+  await ledger.clear();
+  assert.equal((await ledger.stats()).entries, 0);
 });

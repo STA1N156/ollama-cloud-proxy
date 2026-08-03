@@ -104,7 +104,7 @@ export class AdminHandler {
         upstreamKeys: this.pool.snapshot(),
         clientKeys: this.store.listClientKeys(),
         models: this.store.listModels(),
-        cache: this.ledger.stats(),
+        cache: await this.ledger.stats(),
         modelSyncError: this.modelSync.lastError,
         defaultPassword: this.config.adminPassword === '123456',
         allowAnonymous: this.config.allowAnonymous,
@@ -161,7 +161,7 @@ export class AdminHandler {
       return send(res, 200, { ok: true, count: await this.modelSync.sync() });
     }
     if (url.pathname === '/admin/api/cache' && req.method === 'DELETE') {
-      this.ledger.clear();
+      await this.ledger.clear();
       return send(res, 200, { ok: true });
     }
     if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {

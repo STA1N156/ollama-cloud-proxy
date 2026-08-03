@@ -1,4 +1,4 @@
-import { buildFingerprint, cachedTokenCount } from './cache.js';
+import { cachedTokenCount } from './cache.js';
 
 const retryable = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
 const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
@@ -133,23 +133,30 @@ export function injectUsage(data, hit, totalWeight, injectCache = true) {
   return { data: JSON.stringify(object), usage, usageOnly, reasoningNormalized };
 }
 
-function patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache, countOutput = false) {
+async function patchSseEvent(event, resolveCache, forwardUsage, injectCache, countOutput = false) {
   const lines = event.replace(/\r\n/g, '\n').split('\n');
   const dataLines = lines.filter((line) => line.startsWith('data:'));
   if (!dataLines.length) return { event, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
   const data = dataLines.map((line) => line.slice(5).trimStart()).join('\n');
   if (data === '[DONE]') return { event, usage: null, usageOnly: false, done: true, outputCharacters: 0 };
-  const patched = injectUsage(data, hit, totalWeight, injectCache);
   let object;
-  try { object = JSON.parse(patched.data); } catch { object = null; }
+  try { object = JSON.parse(data); } catch { object = null; }
+  if (!object) return { event, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
+  const reasoningNormalized = normalizeReasoning(object);
+  const rawUsage = object?.usage || object?.response?.usage;
+  const cache = rawUsage && typeof rawUsage === 'object' && injectCache
+    ? await resolveCache()
+    : { hit: null, fingerprint: { totalWeight: 0 } };
+  const usage = usageFromObject(object, cache.hit, cache.fingerprint.totalWeight, injectCache);
+  const usageOnly = Boolean(usage && Array.isArray(object.choices) && object.choices.length === 0);
   const done = object?.type === 'response.completed' || object?.response?.status === 'completed';
   const outputCharacters = countOutput ? outputCharacterCount(object) : 0;
-  if (!patched.usage && !patched.reasoningNormalized) return { event, usage: null, usageOnly: false, done, outputCharacters };
-  if (patched.usageOnly && !forwardUsage) return { event: '', usage: patched.usage, usageOnly: true, done, outputCharacters };
+  if (usageOnly && !forwardUsage) return { event: '', usage, usageOnly: true, done, outputCharacters };
+  if (!reasoningNormalized && !(usage && injectCache)) return { event, usage, usageOnly, done, outputCharacters };
   const rebuilt = lines.filter((line) => !line.startsWith('data:'));
   const insertAt = rebuilt.findIndex((line) => line === '');
-  rebuilt.splice(insertAt < 0 ? rebuilt.length : insertAt, 0, `data: ${patched.data}`);
-  return { event: rebuilt.join('\n'), usage: patched.usage, usageOnly: patched.usageOnly, done, outputCharacters };
+  rebuilt.splice(insertAt < 0 ? rebuilt.length : insertAt, 0, `data: ${JSON.stringify(object)}`);
+  return { event: rebuilt.join('\n'), usage, usageOnly, done, outputCharacters };
 }
 
 function copyRequestHeaders(req, secret) {
@@ -166,8 +173,8 @@ function copyResponseHeaders(upstream, res, hit, localCache) {
   for (const [name, value] of upstream.headers) {
     if (!hopByHop.has(name.toLowerCase()) && !name.toLowerCase().startsWith('access-control-')) res.setHeader(name, value);
   }
-  res.setHeader('x-proxy-cache', localCache ? (hit.matched ? 'HIT' : 'MISS') : 'BYPASS');
-  if (localCache && hit.matched) res.setHeader('x-proxy-cache-type', hit.exact ? 'exact' : 'prefix');
+  res.setHeader('x-proxy-cache', localCache ? (hit ? (hit.matched ? 'HIT' : 'MISS') : 'PENDING') : 'BYPASS');
+  if (localCache && hit?.matched) res.setHeader('x-proxy-cache-type', hit.exact ? 'exact' : 'prefix');
   res.setHeader('x-proxy-cache-source', localCache ? 'proxy-simulated' : 'upstream');
 }
 
@@ -290,6 +297,19 @@ export class ProxyHandler {
     let finalInternal400 = false;
     let internal400Retries = 0;
     let ordinaryFailures = 0;
+    let cacheJob;
+    const cacheState = { value: null };
+    const cacheFallback = {
+      fingerprint: { endpoint: url.pathname, entries: [], totalWeight: 0 },
+      hit: { matched: false, exact: false, weight: 0, observedTokens: 0 },
+    };
+    const startCache = () => {
+      if (!cacheJob) cacheJob = this.ledger.resolve(url.pathname, request, model).then(
+        (value) => { cacheState.value = value; return value; },
+        (error) => { cacheState.value = cacheFallback; console.error('cache lookup failed:', error.message); return cacheFallback; },
+      );
+      return cacheJob;
+    };
     while (ordinaryFailures < this.config.retryCount) {
       try {
         try {
@@ -302,13 +322,15 @@ export class ProxyHandler {
         excluded.add(lease.id);
         const target = `${lease.baseUrl}${url.pathname.slice(3)}${url.search}`;
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.config.responseHeaderTimeoutMs)]);
-        upstream = await fetch(target, {
+        const fetchJob = fetch(target, {
           method: 'POST',
           headers: copyRequestHeaders(req, lease.secret),
           body: upstreamBody,
           signal,
           redirect: 'manual',
         });
+        if (supportsLocalCache && lease.baseUrl === this.store.defaultUpstreamBaseUrl) startCache();
+        upstream = await fetchJob;
         bufferedUpstreamBody = undefined;
         finalInternal400 = false;
         if (lease.baseUrl !== this.store.defaultUpstreamBaseUrl) {
@@ -364,8 +386,7 @@ export class ProxyHandler {
     }
 
     const cacheable = supportsLocalCache && lease.baseUrl === this.store.defaultUpstreamBaseUrl;
-    const fingerprint = cacheable ? buildFingerprint(url.pathname, request, this.store.masterKey) : { totalWeight: 0 };
-    const hit = cacheable ? this.ledger.lookup(fingerprint, model) : { matched: false, exact: false, weight: 0, observedTokens: 0 };
+    if (cacheable) startCache();
     const external = lease.baseUrl !== this.store.defaultUpstreamBaseUrl;
     if (external && upstream.ok) this.pool.report(lease.id, 'healthy');
     else if (!external && finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
@@ -373,15 +394,15 @@ export class ProxyHandler {
     else if (!external && upstream.status < 500) this.pool.report(lease.id, 'healthy');
     if (upstream.ok) lastError = null;
 
-    copyResponseHeaders(upstream, res, hit, cacheable);
     let usage = null;
     let completed = false;
     try {
       if (stream && upstream.ok && upstream.body) {
+        copyResponseHeaders(upstream, res, cacheState.value?.hit, cacheable);
         res.statusCode = upstream.status;
         res.flushHeaders();
         const streamed = await this.pipeStream(
-          upstream, res, hit, fingerprint.totalWeight, clientWantsUsage, cacheable, controller.signal,
+          upstream, res, cacheable ? startCache : async () => cacheFallback, clientWantsUsage, cacheable, controller.signal,
           (progress) => {
             usage = mergeUsage(usage, progress.usage);
             completed ||= progress.complete;
@@ -394,7 +415,9 @@ export class ProxyHandler {
         res.end();
       } else {
         const input = bufferedUpstreamBody ?? await upstream.text();
-        const patched = upstream.ok ? injectUsage(input, hit, fingerprint.totalWeight, cacheable) : { data: input, usage: null };
+        const cache = cacheable && upstream.ok ? await startCache() : cacheFallback;
+        copyResponseHeaders(upstream, res, cache.hit, cacheable);
+        const patched = upstream.ok ? injectUsage(input, cache.hit, cache.fingerprint.totalWeight, cacheable) : { data: input, usage: null };
         usage = patched.usage;
         lease.release();
         if (upstream.ok && clientAccess.outputTps && usage?.completionTokens) {
@@ -411,7 +434,9 @@ export class ProxyHandler {
       if (!res.writableEnded && !res.destroyed) res.destroy(error);
     } finally {
       lease.release();
-      if (cacheable && completed && upstream.ok) this.ledger.register(fingerprint, model, usage?.promptTokens || 0);
+      if (cacheable && completed && upstream.ok) startCache().then(({ fingerprint }) => {
+        this.ledger.register(fingerprint, model, usage?.promptTokens || 0);
+      });
       this.store.queueUsage({
         upstreamKeyId: lease.id,
         clientKeyId,
@@ -429,7 +454,7 @@ export class ProxyHandler {
     }
   }
 
-  async pipeStream(upstream, res, hit, totalWeight, forwardUsage, injectCache, signal, onProgress, outputTps = 0) {
+  async pipeStream(upstream, res, resolveCache, forwardUsage, injectCache, signal, onProgress, outputTps = 0) {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     const limited = Number(outputTps) > 0;
@@ -456,7 +481,10 @@ export class ProxyHandler {
         const end = match.index + match[0].length;
         const event = buffer.slice(0, end);
         buffer = buffer.slice(end);
-        const patched = patchSseEvent(event, hit, totalWeight, forwardUsage, injectCache, limited);
+        const relevant = limited || /"(?:reasoning|thinking|usage)"\s*:|\[DONE\]/.test(event);
+        const patched = relevant
+          ? await patchSseEvent(event, resolveCache, forwardUsage, injectCache, limited)
+          : { event, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
         usage = mergeUsage(usage, patched.usage);
         if (patched.done || patched.usageOnly) complete = true;
         if (patched.usage || patched.done) onProgress?.({ usage, complete });
@@ -465,7 +493,10 @@ export class ProxyHandler {
     }
     buffer += decoder.decode();
     if (buffer) {
-      const patched = patchSseEvent(buffer, hit, totalWeight, forwardUsage, injectCache, limited);
+      const relevant = limited || /"(?:reasoning|thinking|usage)"\s*:|\[DONE\]/.test(buffer);
+      const patched = relevant
+        ? await patchSseEvent(buffer, resolveCache, forwardUsage, injectCache, limited)
+        : { event: buffer, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
       usage = mergeUsage(usage, patched.usage);
       if (patched.done || patched.usageOnly) complete = true;
       if (patched.usage || patched.done) onProgress?.({ usage, complete });
