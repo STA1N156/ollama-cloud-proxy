@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cloud Proxy Console</title>
-  <link rel="stylesheet" href="/admin/style.css?v=8">
+  <link rel="stylesheet" href="/admin/style.css?v=9">
 </head>
 <body>
   <section class="login-shell" id="login-view">
@@ -88,7 +88,8 @@
           <div class="cache-layout">
             <div class="cache-card"><p class="eyebrow">ACTIVE PREFIXES</p><strong id="cache-entries">0</strong><span>未过期前缀</span></div>
             <div class="cache-card"><p class="eyebrow">DISK FOOTPRINT</p><strong id="cache-size">0 B</strong><span>缓存表与索引实际分配空间</span></div>
-            <div class="panel cache-info"><h3>命中规则</h3><p>忽略模型名、上游密钥和下游密钥。system、tools、response format 与消息开头完全一致时命中，成功请求会刷新 1 小时有效期。</p><div class="code-line"><span>响应标识</span><code>X-Proxy-Cache: HIT</code></div><div class="code-line"><span>缓存来源</span><code>proxy-simulated</code></div><button class="danger" id="clear-cache">清空缓存账本</button></div>
+            <div class="cache-card"><div class="cache-card-head"><p class="eyebrow">RP CACHE</p><label class="switch" title="切换 RP 缓存"><input id="rp-cache-toggle" type="checkbox"><i></i></label></div><strong id="rp-cache-status">关闭</strong><span id="rp-cache-note">正在读取分块状态</span></div>
+            <div class="panel cache-info"><h3>命中规则</h3><p>普通模式仍按 system、tools、response format 与消息开头判断。开启 RP 缓存后，世界书或角色设定即使换了插入位置，也会用相同内容分块补充命中；关闭时仍会积累分块，方便以后直接开启。</p><div class="code-line"><span>响应标识</span><code>X-Proxy-Cache: HIT</code></div><div class="code-line"><span>RP 分块</span><code>1 小时过期 · 总缓存上限 512 MB</code></div><div class="code-line"><span>缓存来源</span><code>proxy-simulated</code></div><button class="danger" id="clear-cache">清空缓存账本</button></div>
           </div>
         </section>
       </main>
@@ -97,6 +98,6 @@
 
   <dialog id="token-dialog"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3>请立即保存</h3><p class="muted">关闭后无法再次查看完整密钥。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">我已保存</button></div></dialog>
   <div class="toast" id="toast"></div>
-  <script type="module" src="/admin/app.js?v=8"></script>
+  <script type="module" src="/admin/app.js?v=9"></script>
 </body>
 </html>

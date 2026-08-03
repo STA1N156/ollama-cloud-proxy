@@ -164,6 +164,10 @@ export class AdminHandler {
       await this.ledger.clear();
       return send(res, 200, { ok: true });
     }
+    if (url.pathname === '/admin/api/cache/rp' && req.method === 'PATCH') {
+      const body = await json(req);
+      return send(res, 200, await this.ledger.setRpEnabled(Boolean(body.enabled)));
+    }
     if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {
       this.store.clearUsage();
       return send(res, 200, { ok: true });

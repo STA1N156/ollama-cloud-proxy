@@ -88,6 +88,9 @@ function render() {
 
   $('#cache-entries').textContent = num(state.cache.entries);
   $('#cache-size').textContent = bytes(state.cache.indexedBytes);
+  $('#rp-cache-toggle').checked = Boolean(state.cache.rpEnabled);
+  $('#rp-cache-status').textContent = state.cache.rpEnabled ? '开启' : '关闭';
+  $('#rp-cache-note').textContent = `已储存 ${num(state.cache.rpEntries)} 个分块 · 1 小时过期 · 上限 ${bytes(state.cache.limitBytes)}`;
   $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
   $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.clientKeys.some((key) => key.enabled));
   const latest = state.models.reduce((max, model) => Math.max(max, model.synced_at || 0), 0);
@@ -234,7 +237,19 @@ $('#clear-usage').addEventListener('click', async (event) => {
     toast('统计数据已清空');
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 });
-$('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load(); } });
+$('#rp-cache-toggle').addEventListener('change', async (event) => {
+  const input = event.currentTarget;
+  input.disabled = true;
+  try {
+    await api('/admin/api/cache/rp', { method: 'PATCH', body: JSON.stringify({ enabled: input.checked }) });
+    toast(input.checked ? 'RP 缓存已开启' : 'RP 缓存已关闭');
+    await load();
+  } catch (error) {
+    toast(error.message);
+    await load();
+  } finally { input.disabled = false; }
+});
+$('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀和 RP 分块吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load(); } });
 $('#refresh').addEventListener('click', load);
 $('#range').addEventListener('change', load);
 $('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });

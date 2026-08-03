@@ -174,7 +174,7 @@ function copyResponseHeaders(upstream, res, hit, localCache) {
     if (!hopByHop.has(name.toLowerCase()) && !name.toLowerCase().startsWith('access-control-')) res.setHeader(name, value);
   }
   res.setHeader('x-proxy-cache', localCache ? (hit ? (hit.matched ? 'HIT' : 'MISS') : 'PENDING') : 'BYPASS');
-  if (localCache && hit?.matched) res.setHeader('x-proxy-cache-type', hit.exact ? 'exact' : 'prefix');
+  if (localCache && hit?.matched) res.setHeader('x-proxy-cache-type', hit.type || (hit.exact ? 'exact' : 'prefix'));
   res.setHeader('x-proxy-cache-source', localCache ? 'proxy-simulated' : 'upstream');
 }
 

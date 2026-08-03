@@ -5,6 +5,10 @@ import { hmac256 } from '../src/crypto.js';
 import { Store } from '../src/store.js';
 import { tempConfig } from '../test-support/helpers.js';
 
+const rpSection = (name, length) => Array.from({ length }, (_, index) => (
+  `${name}第${index}条：角色在${index % 17}号地点遇见${(index * 7) % 31}号人物，携带${(index * index) % 97}枚银币；情绪值为${index % 9}。`
+)).join('\n');
+
 test('缓存指纹忽略模型、采样参数和 JSON 对象字段顺序', () => {
   const key = Buffer.alloc(32, 7);
   const left = buildFingerprint('/v1/chat/completions', {
@@ -113,4 +117,61 @@ test('缓存大小统计实际哈希索引空间，不累计原始上下文长�
   assert.ok(stats.indexedBytes < fingerprint.totalWeight / 4);
   await ledger.clear();
   assert.equal((await ledger.stats()).entries, 0);
+});
+
+test('RP 分块不受世界书插入位置变化影响', () => {
+  const key = Buffer.alloc(32, 5);
+  const role = rpSection('角色', 120);
+  const world = rpSection('世界', 120);
+  const history = rpSection('历史', 120);
+  const inserted = rpSection('临时世界书', 20);
+  const fingerprint = (content) => buildFingerprint('/v1/chat/completions', {
+    messages: [{ role: 'system', content }, { role: 'user', content: '继续剧情' }],
+  }, key);
+  const before = fingerprint(role + world + history + inserted);
+  const moved = fingerprint(role + inserted + world + history);
+  const known = new Set(before.rpChunks.map((chunk) => chunk.hash));
+  const sharedWeight = moved.rpChunks.filter((chunk) => known.has(chunk.hash)).reduce((sum, chunk) => sum + chunk.weight, 0);
+
+  assert.notEqual(before.entries.at(-1).hash, moved.entries.at(-1).hash);
+  assert.ok(sharedWeight > moved.rpTotalWeight * 0.7);
+});
+
+test('RP 缓存默认关闭但持续储存，开启后立即命中并在一小时过期', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  let ledger = new CacheLedger(store, config.cacheTtlMs);
+  t.after(async () => { await ledger?.close(); store.close(); config.cleanup(); });
+
+  const role = rpSection('角色', 120);
+  const world = rpSection('世界', 120);
+  const history = rpSection('历史', 120);
+  const inserted = rpSection('临时世界书', 20);
+  const fingerprint = (content) => buildFingerprint('/v1/chat/completions', {
+    messages: [{ role: 'system', content }, { role: 'user', content: '继续剧情' }],
+  }, store.masterKey);
+  const before = fingerprint(role + world + history + inserted);
+  const moved = fingerprint(role + inserted + world + history);
+
+  ledger.register(before, 'model-a', 2000);
+  await ledger.flush();
+  const disabled = await ledger.stats();
+  assert.equal(disabled.rpEnabled, false);
+  assert.ok(disabled.rpEntries > 0);
+  assert.equal(disabled.limitBytes, 512 * 1024 * 1024);
+  assert.equal((await ledger.lookup(moved, 'model-a')).matched, false);
+  assert.equal(Number(store.db.prepare('SELECT expires_at - updated_at ttl FROM prompt_cache_rp LIMIT 1').get().ttl), 60 * 60_000);
+
+  await ledger.setRpEnabled(true);
+  const hit = await ledger.lookup(moved, 'model-b');
+  assert.equal(hit.type, 'rp');
+  assert.ok(cachedTokenCount(hit, 2000, moved.totalWeight) > 1000);
+
+  await ledger.close();
+  ledger = new CacheLedger(store, config.cacheTtlMs);
+  assert.equal((await ledger.stats()).rpEnabled, true);
+  store.db.prepare('UPDATE prompt_cache_rp SET expires_at=?').run(Date.now() - 1);
+  assert.equal((await ledger.stats()).rpEntries, 0);
+  await ledger.clear();
+  assert.equal((await ledger.stats()).rpEntries, 0);
 });

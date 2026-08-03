@@ -73,6 +73,20 @@ export class Store {
         FOREIGN KEY (hash) REFERENCES prompt_cache(hash) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS prompt_cache_rp (
+        hash TEXT PRIMARY KEY,
+        endpoint TEXT NOT NULL,
+        weight INTEGER NOT NULL,
+        copies INTEGER NOT NULL DEFAULT 1,
+        expires_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cache_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS usage_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at INTEGER NOT NULL,
@@ -105,7 +119,11 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
       CREATE INDEX IF NOT EXISTS idx_usage_key_model ON usage_events(upstream_key_id, model);
       CREATE INDEX IF NOT EXISTS idx_cache_expiry ON prompt_cache(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_cache_updated ON prompt_cache(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_cache_rp_expiry ON prompt_cache_rp(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_cache_rp_updated ON prompt_cache_rp(updated_at);
     `);
+    this.db.prepare("INSERT OR IGNORE INTO cache_settings(key, value) VALUES ('rp_enabled', '0')").run();
     const clientColumns = this.db.prepare('PRAGMA table_info(client_keys)').all();
     if (!clientColumns.some((column) => column.name === 'token_secret')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN token_secret TEXT NOT NULL DEFAULT ''");
