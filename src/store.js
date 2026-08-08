@@ -7,7 +7,7 @@ const outputTps = (value) => Math.min(1000, Math.max(0, Math.floor(Number(value)
 const clientOrigin = (value) => {
   const origin = String(value || '').trim();
   if (!origin) return '';
-  if (origin !== 'https://sta1n156.github.io') throw new Error('不支持的来源地址');
+  if (!['https://sta1n156.github.io', 'codex-router'].includes(origin)) throw new Error('不支持的白名单');
   return origin;
 };
 export const normalizeBaseUrl = (value, fallback = 'https://ollama.com/v1') => {

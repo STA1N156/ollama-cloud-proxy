@@ -35,7 +35,9 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   store.addClientKey('环境变量密钥', 'ocp_copy_me');
   assert.equal(store.getClientAccess('ocp_copy_me').outputTps, 12);
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
-  assert.throws(() => store.setClientAllowedOrigin(id, 'https://example.com'), /不支持的来源地址/);
+  store.setClientAllowedOrigin(id, 'codex-router');
+  assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'codex-router');
+  assert.throws(() => store.setClientAllowedOrigin(id, 'https://example.com'), /不支持的白名单/);
   store.queueUsage({
     upstreamKeyId: upstreamId,
     clientKeyId: id,

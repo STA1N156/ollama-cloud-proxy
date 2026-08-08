@@ -3,6 +3,7 @@ import { cachedTokenCount } from './cache.js';
 const retryable = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
 const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const rphOrigins = new Set(['https://sta1n156.github.io', 'https://api.sta1n.site', 'https://cdn.sta1n.cn']);
+const codexRouterAgent = /^codex-router\/\S+/i;
 const internalServerError400 = (status, body) => status === 400 && /\binternal server error\b/i.test(body);
 
 const jsonError = (res, status, message, type = 'proxy_error') => {
@@ -258,11 +259,15 @@ export class ProxyHandler {
     } catch (error) {
       return jsonError(res, error.status || 401, error.message, 'authentication_error');
     }
-    if (clientAccess.allowedOrigin && !rphOrigins.has(req.headers.origin)) {
+    if (clientAccess.allowedOrigin === 'codex-router' && !codexRouterAgent.test(req.headers['user-agent'] || '')) {
       return jsonError(res, 403, '该密钥仅允许来自白名单的请求', 'permission_error');
     }
-    res.setHeader('access-control-allow-origin', clientAccess.allowedOrigin ? req.headers.origin : '*');
-    if (clientAccess.allowedOrigin) res.setHeader('vary', 'Origin');
+    if (clientAccess.allowedOrigin && clientAccess.allowedOrigin !== 'codex-router' && !rphOrigins.has(req.headers.origin)) {
+      return jsonError(res, 403, '该密钥仅允许来自白名单的请求', 'permission_error');
+    }
+    const originRestricted = clientAccess.allowedOrigin && clientAccess.allowedOrigin !== 'codex-router';
+    res.setHeader('access-control-allow-origin', originRestricted ? req.headers.origin : '*');
+    if (originRestricted) res.setHeader('vary', 'Origin');
     const clientKeyId = clientAccess.id;
 
     if (req.method === 'GET' && url.pathname === '/v1/models') return this.models(res);

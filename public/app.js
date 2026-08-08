@@ -78,7 +78,7 @@ function render() {
   $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td><code>•••• ${esc(key.last4)}</code></td><td title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
     <td><div class="rate-control"><input data-client-rate type="number" min="0" max="1000" value="${Number(key.output_tps) || 0}" aria-label="${esc(key.label)} 输出 token 每秒"><span>token/s</span><button data-action="save-client-rate" data-id="${key.id}">保存</button></div></td>
-    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 白名单"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin === 'https://sta1n156.github.io' ? 'selected' : ''}>已启用</option></select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
+    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 白名单"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin === 'https://sta1n156.github.io' ? 'selected' : ''}>白名单 1</option><option value="codex-router" ${key.allowed_origin === 'codex-router' ? 'selected' : ''}>白名单 2</option></select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
     <td><span class="badge ${key.enabled ? 'good' : 'warn'}">${key.enabled ? '启用' : '暂停'}</span></td>
     <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-client" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未生成下游访问密钥</td></tr>';
@@ -214,7 +214,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'save-client-origin') {
       const origin = button.closest('tr').querySelector('[data-client-origin]').value;
       await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ allowedOrigin: origin }) });
-      toast(origin ? '已启用白名单，请确认 New API 已透传 Origin' : '已关闭白名单');
+      toast(origin === 'codex-router' ? '已启用白名单 2，仅接受 codex-router/*' : origin ? '已启用白名单 1，请确认 New API 已透传 Origin' : '已关闭白名单');
       await load();
       return;
     }

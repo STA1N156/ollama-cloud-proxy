@@ -194,6 +194,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   store.addClientKey('client', 'client-key');
   store.addClientKey('slow', 'slow-key', 20);
   store.addClientKey('site', 'site-key', 0, 'https://sta1n156.github.io');
+  store.addClientKey('router', 'router-key', 0, 'codex-router');
   const pool = new KeyPool(store, 8);
   const ledger = new CacheLedger(store, config.cacheTtlMs);
   const proxy = new ProxyHandler(config, store, pool, ledger);
@@ -221,8 +222,21 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('access-control-allow-origin'), origin);
   }
-  assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: siteHeaders })).status, 403);
+  const blockedSite = await fetch(`${proxyUrl}/v1/models`, { headers: siteHeaders });
+  assert.equal(blockedSite.status, 403);
+  assert.equal((await blockedSite.json()).error.message, '该密钥仅允许来自白名单的请求');
   assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...siteHeaders, origin: 'https://example.com' } })).status, 403);
+
+  const routerHeaders = { authorization: 'Bearer router-key' };
+  for (const agent of ['codex-router/1.0.0', 'codex-router/xxxxx']) {
+    const response = await fetch(`${proxyUrl}/v1/models`, { headers: { ...routerHeaders, 'user-agent': agent } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), '*');
+  }
+  const blockedRouter = await fetch(`${proxyUrl}/v1/models`, { headers: routerHeaders });
+  assert.equal(blockedRouter.status, 403);
+  assert.equal((await blockedRouter.json()).error.message, '该密钥仅允许来自白名单的请求');
+  assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...routerHeaders, 'user-agent': 'codex-router/' } })).status, 403);
 
   const base = {
     messages: [{ role: 'system', content: '保持简洁' }, { role: 'user', content: '你好' }],
