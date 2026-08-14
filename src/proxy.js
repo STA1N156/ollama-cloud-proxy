@@ -260,10 +260,10 @@ export class ProxyHandler {
       return jsonError(res, error.status || 401, error.message, 'authentication_error');
     }
     if (clientAccess.allowedOrigin === 'codex-router' && !codexRouterAgent.test(req.headers['user-agent'] || '')) {
-      return jsonError(res, 403, '该密钥仅允许来自白名单的请求', 'permission_error');
+      return jsonError(res, 403, '当前分组仅限在Codex-Router中使用，您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方工具使用', 'permission_error');
     }
     if (clientAccess.allowedOrigin && clientAccess.allowedOrigin !== 'codex-router' && !rphOrigins.has(req.headers.origin)) {
-      return jsonError(res, 403, '该密钥仅允许来自白名单的请求', 'permission_error');
+      return jsonError(res, 403, '当前分组仅限在RP-Hub官方源站使用，如您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方源站使用', 'permission_error');
     }
     const originRestricted = clientAccess.allowedOrigin && clientAccess.allowedOrigin !== 'codex-router';
     res.setHeader('access-control-allow-origin', originRestricted ? req.headers.origin : '*');
