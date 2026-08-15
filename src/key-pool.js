@@ -63,6 +63,8 @@ export class KeyPool {
         label: key.label,
         baseUrl: key.base_url,
         secret: key.secret,
+        useProxyCache: key.base_url === this.store.defaultUpstreamBaseUrl || key.use_proxy_cache,
+        replaceUpstreamCache: key.base_url !== this.store.defaultUpstreamBaseUrl && key.use_proxy_cache,
         release: () => {
           if (released) return;
           released = true;
@@ -92,6 +94,10 @@ export class KeyPool {
   }
 
   snapshot() {
-    return [...this.keys.values()].map(({ secret, secret_hash, ...key }) => ({ ...key }));
+    return [...this.keys.values()].map(({ secret, secret_hash, ...key }) => ({
+      ...key,
+      proxyCacheEnabled: key.base_url === this.store.defaultUpstreamBaseUrl || key.use_proxy_cache,
+      proxyCacheConfigurable: key.base_url !== this.store.defaultUpstreamBaseUrl,
+    }));
   }
 }

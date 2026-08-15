@@ -15,7 +15,7 @@
 - 跨模型、跨上游密钥、跨下游密钥的一小时提示词前缀命中
 - 每个下游访问密钥可独立设置输出 Token 减速器，`0` 表示不限速
 - 每个下游访问密钥可独立启用来源白名单，默认不启用；New API 必须透传浏览器的 `Origin`
-- 外部 API 不使用本地缓存、不注入缓存 token、错误不重试，状态码、响应头、响应体与 usage 直接透传
+- 外部 API 可逐个选择直接透传上游缓存，或使用代理缓存替换上游 `cached_tokens`；错误仍不重试并原样透传
 - SQLite WAL 持久化，密钥 AES-256-GCM 加密，缓存仅保存 HMAC 哈希
 - `/admin` 管理后台、P95 耗时、按密钥与模型统计、下游密钥累计用量和统计清理
 - Docker、GHCR 构建工作流和 Zeabur Template YAML
@@ -68,7 +68,7 @@ const response = await client.chat.completions.create({
 
 ## 缓存命中规则
 
-本地缓存只用于默认 Ollama Cloud 通道。外部 OpenAI 兼容通道会跳过本地缓存，直接使用上游返回的 usage。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。
+默认 Ollama Cloud 通道固定使用本地缓存。外部 OpenAI 兼容通道默认跳过本地缓存并直接使用上游 usage，可在后台逐个开启代理缓存；开启后即使上游没有缓存功能也能生成命中量，并以代理计算的 `cached_tokens` 替换上游缓存统计。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。
 
 - 完整提示词相同：`cached_tokens` 等于本次真实 `prompt_tokens`。
 - 当前请求在旧请求后继续追加消息：最长相同前缀命中。
@@ -85,7 +85,7 @@ X-Proxy-Cache-Type: exact | prefix
 X-Proxy-Cache-Source: proxy-simulated
 ```
 
-外部通道返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`。
+未开启代理缓存的外部通道返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`；开启后与 Ollama 通道一样返回代理缓存标识。
 
 Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses API 写入 `usage.input_tokens_details.cached_tokens`。流式 Chat Completions 只有在客户端设置 `stream_options.include_usage=true` 时才向下游发送最终 usage 数据块。
 

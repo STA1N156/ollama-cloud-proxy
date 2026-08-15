@@ -38,6 +38,7 @@ export class Store {
         secret_hash TEXT NOT NULL UNIQUE,
         last4 TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
+        use_proxy_cache INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'new',
         last_error TEXT NOT NULL DEFAULT '',
         cooldown_until INTEGER NOT NULL DEFAULT 0,
@@ -138,6 +139,9 @@ export class Store {
     if (!upstreamColumns.some((column) => column.name === 'base_url')) {
       this.db.exec("ALTER TABLE upstream_keys ADD COLUMN base_url TEXT NOT NULL DEFAULT ''");
     }
+    if (!upstreamColumns.some((column) => column.name === 'use_proxy_cache')) {
+      this.db.exec('ALTER TABLE upstream_keys ADD COLUMN use_proxy_cache INTEGER NOT NULL DEFAULT 0');
+    }
     this.db.prepare("UPDATE upstream_keys SET base_url=? WHERE base_url='' OR base_url IS NULL").run(this.defaultUpstreamBaseUrl);
     const modelColumns = this.db.prepare('PRAGMA table_info(models)').all();
     if (!modelColumns.some((column) => column.name === 'source_url')) {
@@ -175,7 +179,7 @@ export class Store {
     this.db.close();
   }
 
-  addUpstreamKey(label, secret, baseUrl = this.defaultUpstreamBaseUrl) {
+  addUpstreamKey(label, secret, baseUrl = this.defaultUpstreamBaseUrl, useProxyCache = false) {
     const value = secret.trim();
     if (!value) throw new Error('密钥不能为空');
     const source = normalizeBaseUrl(baseUrl, this.defaultUpstreamBaseUrl);
@@ -183,12 +187,12 @@ export class Store {
     const previous = this.db.prepare('SELECT base_url FROM upstream_keys WHERE secret_hash=?').get(hash);
     const stamp = now();
     const result = this.db.prepare(`
-      INSERT INTO upstream_keys(label, base_url, secret, secret_hash, last4, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO upstream_keys(label, base_url, secret, secret_hash, last4, use_proxy_cache, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(secret_hash) DO UPDATE SET label=excluded.label, base_url=excluded.base_url,
-        enabled=1, status='new', last_error='', cooldown_until=0, updated_at=excluded.updated_at
+        use_proxy_cache=excluded.use_proxy_cache, enabled=1, status='new', last_error='', cooldown_until=0, updated_at=excluded.updated_at
       RETURNING id
-    `).get(label.trim() || `Key ${value.slice(-4)}`, source, encrypt(value, this.masterKey), hash, value.slice(-4), stamp, stamp);
+    `).get(label.trim() || `Key ${value.slice(-4)}`, source, encrypt(value, this.masterKey), hash, value.slice(-4), useProxyCache ? 1 : 0, stamp, stamp);
     if (previous && previous.base_url !== source && !this.db.prepare('SELECT 1 FROM upstream_keys WHERE base_url=? LIMIT 1').get(previous.base_url)) {
       this.db.prepare('DELETE FROM models WHERE source_url=?').run(previous.base_url);
     }
@@ -200,6 +204,7 @@ export class Store {
       ...row,
       id: Number(row.id),
       enabled: Boolean(row.enabled),
+      use_proxy_cache: Boolean(row.use_proxy_cache),
       secret: reveal ? decrypt(row.secret, this.masterKey) : undefined,
       secret_hash: undefined,
     }));
@@ -207,12 +212,17 @@ export class Store {
 
   getUpstreamKey(id) {
     const row = this.db.prepare('SELECT * FROM upstream_keys WHERE id=?').get(id);
-    return row ? { ...row, id: Number(row.id), enabled: Boolean(row.enabled), secret: decrypt(row.secret, this.masterKey), secret_hash: undefined } : null;
+    return row ? { ...row, id: Number(row.id), enabled: Boolean(row.enabled), use_proxy_cache: Boolean(row.use_proxy_cache), secret: decrypt(row.secret, this.masterKey), secret_hash: undefined } : null;
   }
 
   setUpstreamEnabled(id, enabled) {
     this.db.prepare("UPDATE upstream_keys SET enabled=?, status=CASE WHEN ? THEN 'new' ELSE 'paused' END, updated_at=? WHERE id=?")
       .run(enabled ? 1 : 0, enabled ? 1 : 0, now(), id);
+  }
+
+  setUpstreamProxyCache(id, enabled) {
+    this.db.prepare('UPDATE upstream_keys SET use_proxy_cache=?, updated_at=? WHERE id=?')
+      .run(enabled ? 1 : 0, now(), id);
   }
 
   updateUpstreamHealth(id, status, error = '', cooldownUntil = 0) {

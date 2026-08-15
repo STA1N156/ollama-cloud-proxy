@@ -112,7 +112,7 @@ export class AdminHandler {
     }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);
-      const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''));
+      const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''), Boolean(body.useProxyCache));
       this.pool.reload();
       this.modelSync.sync().catch(() => {});
       return send(res, 201, { id });
@@ -123,7 +123,8 @@ export class AdminHandler {
       if (upstream[2] === 'test' && req.method === 'POST') return send(res, 200, await this.testKey(id));
       if (req.method === 'PATCH') {
         const body = await json(req);
-        this.store.setUpstreamEnabled(id, Boolean(body.enabled));
+        if (body.enabled != null) this.store.setUpstreamEnabled(id, Boolean(body.enabled));
+        if (body.useProxyCache != null) this.store.setUpstreamProxyCache(id, Boolean(body.useProxyCache));
         this.pool.reload();
         return send(res, 200, { ok: true });
       }

@@ -305,7 +305,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   assert.ok(Date.now() - slowStarted >= 80);
 });
 
-test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支持减速', async (t) => {
+test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并支持减速', async (t) => {
   const ollamaServer = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ models: [{ name: 'ollama-model' }] }));
@@ -325,6 +325,10 @@ test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支�
       res.writeHead(500, { 'content-type': 'application/json', 'x-upstream-error': 'kept' });
       return res.end('{"error":{"message":"external failure"}}');
     }
+    if (!body.stream) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end('{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":3}}}');
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":3}}}\n\ndata: [DONE]\n\n');
   });
@@ -335,7 +339,7 @@ test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支�
   });
   const store = new Store(config);
   store.addUpstreamKey('Ollama', 'ollama-key', config.upstreamBaseUrl);
-  store.addUpstreamKey('External', 'external-key', `${externalOrigin}/v1`);
+  const externalKeyId = store.addUpstreamKey('External', 'external-key', `${externalOrigin}/v1`);
   store.addClientKey('Slow client', 'slow-client', 20);
   const pool = new KeyPool(store, 4);
   const modelSync = new ModelSync(config, store, pool);
@@ -355,10 +359,10 @@ test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支�
   const modelsResponse = await fetch(`${proxyUrl}/v1/models`, { headers: { authorization: 'Bearer slow-client' } });
   assert.deepEqual((await modelsResponse.json()).data.map((item) => item.id).sort(), ['external-model', 'ollama-model']);
 
-  const request = (content) => fetch(`${proxyUrl}/v1/chat/completions`, {
+  const request = (content, stream = content !== 'fail') => fetch(`${proxyUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: { authorization: 'Bearer slow-client', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'external-model', messages: [{ role: 'user', content }], stream: content !== 'fail', stream_options: { include_usage: true } }),
+    body: JSON.stringify({ model: 'external-model', messages: [{ role: 'user', content }], stream, stream_options: { include_usage: true } }),
   });
   const failed = await request('fail');
   assert.equal(failed.status, 500);
@@ -374,6 +378,21 @@ test('外部 OpenAI API 同步模型、透明错误、绕过本地缓存并支�
   assert.match(output, /"cached_tokens":3/);
   assert.equal(streamed.headers.get('x-proxy-cache-source'), 'upstream');
   assert.equal((await ledger.stats()).entries, 0);
+
+  store.setUpstreamProxyCache(externalKeyId, true);
+  pool.reload();
+  const missResponse = await request('proxy-cache', false);
+  const miss = await missResponse.json();
+  assert.equal(miss.usage.prompt_tokens_details.cached_tokens, 0);
+  assert.equal(missResponse.headers.get('x-proxy-cache-source'), 'proxy-simulated');
+  for (let index = 0; index < 20 && (await ledger.stats()).entries === 0; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const hitResponse = await request('proxy-cache', true);
+  const hit = await hitResponse.text();
+  assert.match(hit, /"cached_tokens":10/);
+  assert.doesNotMatch(hit, /"cached_tokens":3/);
+  assert.equal(hitResponse.headers.get('x-proxy-cache-source'), 'proxy-simulated');
 });
 
 test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {

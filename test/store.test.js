@@ -101,6 +101,9 @@ test('旧上游和模型数据自动迁移到默认 API 地址', (t) => {
   const key = store.getUpstreamKey(id);
   assert.equal(key.base_url, 'https://external.example/v1');
   assert.equal(key.secret, 'external-secret');
+  assert.equal(key.use_proxy_cache, false);
+  store.setUpstreamProxyCache(id, true);
+  assert.equal(store.getUpstreamKey(id).use_proxy_cache, true);
 });
 
 test('下游鉴权关闭数据库后仍从内存读取', () => {

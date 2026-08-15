@@ -71,9 +71,10 @@ function render() {
   </tr>`).join('') : '<tr><td class="empty" colspan="7">还没有请求记录</td></tr>';
 
   $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
-    <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.enabled ? '启用' : '暂停'}</td>
+    <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
+    <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.proxyCacheEnabled}">${key.proxyCacheEnabled ? '已开启' : '未开启'}</button>` : '<span class="badge good">固定开启</span>'}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.enabled ? '启用' : '暂停'}</td>
     <td><div class="row-actions"><button data-action="test-upstream" data-id="${key.id}">测试</button><button data-action="toggle-upstream" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-upstream" data-id="${key.id}">删除</button></div></td>
-  </tr>`).join('') : '<tr><td class="empty" colspan="6">请先导入一个上游 API 通道</td></tr>';
+  </tr>`).join('') : '<tr><td class="empty" colspan="7">请先导入一个上游 API 通道</td></tr>';
 
   $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td><code>•••• ${esc(key.last4)}</code></td><td title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
@@ -195,8 +196,15 @@ document.addEventListener('click', async (event) => {
   if (action.startsWith('delete') && !confirm('确定删除吗？此操作不能撤销。')) return;
   button.disabled = true;
   try {
-    const upstream = action.endsWith('upstream');
+    const upstream = action.includes('upstream');
     const base = upstream ? '/admin/api/upstream-keys' : '/admin/api/client-keys';
+    if (action === 'toggle-upstream-cache') {
+      const useProxyCache = enabled === 'true';
+      await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ useProxyCache }) });
+      toast(useProxyCache ? '已使用代理缓存并替换上游缓存统计' : '已恢复透传上游缓存统计');
+      await load();
+      return;
+    }
     if (action === 'copy-client') {
       const result = await api(`${base}/${id}/reveal`, { method: 'POST' });
       await navigator.clipboard.writeText(result.token);
