@@ -1,23 +1,12 @@
-const sleep = (ms, signal) => new Promise((resolve, reject) => {
-  if (signal?.aborted) return reject(signal.reason || new Error('请求已取消'));
-  const done = () => {
-    signal?.removeEventListener('abort', onAbort);
-    resolve();
-  };
-  const onAbort = () => {
-    clearTimeout(timer);
-    reject(signal.reason || new Error('请求已取消'));
-  };
-  const timer = setTimeout(done, ms);
-  signal?.addEventListener('abort', onAbort, { once: true });
-});
-
 export class KeyPool {
-  constructor(store, maxInflight) {
+  constructor(store, maxInflight, reportHealth) {
     this.store = store;
     this.maxInflight = maxInflight;
+    this.reportHealth = reportHealth;
     this.keys = new Map();
     this.positions = new Map();
+    this.waiters = new Set();
+    this.generation = 0;
     this.reload();
   }
 
@@ -37,6 +26,8 @@ export class KeyPool {
       this.keys.set(row.id, current);
     }
     for (const id of this.keys.keys()) if (!seen.has(id)) this.keys.delete(id);
+    this.sortedKeys = [...this.keys.values()].sort((a, b) => a.id - b.id);
+    this.wake();
   }
 
   eligible(key, model, excluded, sourceUrl) {
@@ -46,7 +37,7 @@ export class KeyPool {
   }
 
   tryAcquire(model, excluded, sourceUrl) {
-    const keys = [...this.keys.values()].sort((a, b) => a.id - b.id);
+    const keys = this.sortedKeys;
     if (!keys.some((key) => this.eligible(key, model, excluded, sourceUrl))) return null;
     const positionKey = `${sourceUrl || '*'}\0${model}`;
     const start = this.positions.get(positionKey) || 0;
@@ -69,6 +60,7 @@ export class KeyPool {
           if (released) return;
           released = true;
           key.inFlight = Math.max(0, key.inFlight - 1);
+          this.wake();
         },
       };
     }
@@ -77,20 +69,44 @@ export class KeyPool {
 
   async acquire(model, excluded = new Set(), signal, sourceUrl) {
     while (true) {
+      const generation = this.generation;
       const lease = this.tryAcquire(model, excluded, sourceUrl);
       if (lease) return lease;
       if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : `没有支持模型 ${model} 的可用上游密钥`);
-      await sleep(20, signal);
+      await this.wait(signal, generation);
     }
+  }
+
+  wait(signal, generation) {
+    if (signal?.aborted) return Promise.reject(signal.reason || new Error('请求已取消'));
+    if (generation !== this.generation) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const done = () => { cleanup(); resolve(); };
+      const abort = () => { cleanup(); reject(signal.reason || new Error('请求已取消')); };
+      const cleanup = () => { this.waiters.delete(done); signal?.removeEventListener('abort', abort); };
+      this.waiters.add(done);
+      signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
+
+  wake() {
+    this.generation += 1;
+    const waiters = [...this.waiters];
+    this.waiters.clear();
+    for (const resolve of waiters) resolve();
   }
 
   report(id, status, error = '', cooldownMs = 0) {
     const key = this.keys.get(id);
     if (!key) return;
+    const message = error.slice(0, 500);
+    const cooldownUntil = cooldownMs ? Date.now() + cooldownMs : 0;
+    const changed = key.status !== status || key.last_error !== message || Number(key.cooldown_until) !== cooldownUntil;
     key.status = status;
-    key.last_error = error;
-    key.cooldown_until = cooldownMs ? Date.now() + cooldownMs : 0;
-    this.store.updateUpstreamHealth(id, status, error, key.cooldown_until);
+    key.last_error = message;
+    key.cooldown_until = cooldownUntil;
+    if (changed) this.reportHealth?.({ id, status, error: message, cooldownUntil });
+    this.wake();
   }
 
   snapshot() {

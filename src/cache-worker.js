@@ -12,6 +12,8 @@ const pending = new Map();
 const pendingRp = new Map();
 let version = 0;
 let lastMaintenance = 0;
+let statsCache = null;
+let statsCachedAt = 0;
 
 db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
 let rpEnabled = db.prepare("SELECT value FROM cache_settings WHERE key='rp_enabled'").get()?.value === '1';
@@ -182,9 +184,9 @@ function enforceLimit() {
   return size;
 }
 
-function maintain(force = false) {
+function maintain() {
   const stamp = Date.now();
-  if (!force && stamp - lastMaintenance < 60_000) return;
+  if (stamp - lastMaintenance < 60_000) return;
   removeExpired(stamp);
   enforceLimit();
   lastMaintenance = stamp;
@@ -230,12 +232,12 @@ function flush() {
 }
 
 function stats() {
-  while (queue.length) flush();
-  maintain(true);
   const stamp = Date.now();
+  if (statsCache && stamp - statsCachedAt < 60_000) return statsCache;
+  maintain();
   const prefix = db.prepare('SELECT COUNT(*) entries, COALESCE(MIN(expires_at), 0) next_expiry FROM prompt_cache WHERE expires_at>?').get(stamp);
   const rp = db.prepare('SELECT COUNT(*) entries FROM prompt_cache_rp WHERE expires_at>?').get(stamp);
-  return {
+  statsCache = {
     entries: Number(prefix.entries),
     rpEntries: Number(rp.entries),
     indexedBytes: cacheBytes(),
@@ -243,6 +245,8 @@ function stats() {
     rpEnabled,
     limitBytes: CACHE_LIMIT_BYTES,
   };
+  statsCachedAt = stamp;
+  return statsCache;
 }
 
 const timer = setInterval(() => {
@@ -266,12 +270,15 @@ parentPort.on('message', (message) => {
       rpEnabled = Boolean(message.enabled);
       db.prepare("INSERT INTO cache_settings(key, value) VALUES ('rp_enabled', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .run(rpEnabled ? '1' : '0');
+      statsCache = statsCache ? { ...statsCache, rpEnabled } : null;
       respond({ enabled: rpEnabled });
     } else if (message.type === 'clear') {
       queue.length = 0;
       pending.clear();
       pendingRp.clear();
       db.exec('BEGIN IMMEDIATE; DELETE FROM prompt_cache; DELETE FROM prompt_cache_rp; COMMIT;');
+      statsCache = null;
+      statsCachedAt = 0;
       respond(true);
     } else if (message.type === 'close') {
       clearInterval(timer);

@@ -109,26 +109,45 @@ export class CacheLedger {
   constructor(store, ttlMs) {
     this.sequence = 0;
     this.pending = new Map();
+    this.closing = false;
     this.worker = new Worker(new URL('./cache-worker.js', import.meta.url), {
       workerData: { databasePath: store.databasePath, masterKey: store.masterKey, ttlMs },
     });
     this.worker.on('message', ({ id, result, error }) => {
       const request = this.pending.get(id);
       if (!request) return;
+      clearTimeout(request.timer);
       this.pending.delete(id);
       if (error) request.reject(new Error(error));
       else request.resolve(result);
     });
     this.worker.on('error', (error) => {
-      for (const request of this.pending.values()) request.reject(error);
-      this.pending.clear();
+      this.fail(error);
+    });
+    this.worker.on('exit', (code) => {
+      if (!this.closing) this.fail(new Error(`缓存工作线程异常退出：${code}`));
+      this.worker = null;
     });
   }
 
-  request(type, data = {}) {
+  fail(error) {
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  request(type, data = {}, timeoutMs = 30_000) {
+    if (!this.worker) return Promise.reject(new Error('缓存工作线程不可用'));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('缓存处理超时'));
+      }, timeoutMs);
+      timer.unref();
+      this.pending.set(id, { resolve, reject, timer });
       this.worker.postMessage({ id, type, ...data });
     });
   }
@@ -142,7 +161,7 @@ export class CacheLedger {
   }
 
   register(fingerprint, model, promptTokens = 0) {
-    this.worker.postMessage({ type: 'register', fingerprint, model, promptTokens });
+    try { this.worker?.postMessage({ type: 'register', fingerprint, model, promptTokens }); } catch {}
   }
 
   flush() {
@@ -154,7 +173,7 @@ export class CacheLedger {
   }
 
   clear() {
-    return this.request('clear');
+    return this.request('clear', {}, 120_000);
   }
 
   setRpEnabled(enabled) {
@@ -164,6 +183,7 @@ export class CacheLedger {
   async close() {
     if (!this.worker) return;
     const worker = this.worker;
+    this.closing = true;
     await this.request('close').catch(() => {});
     this.worker = null;
     await worker.terminate();

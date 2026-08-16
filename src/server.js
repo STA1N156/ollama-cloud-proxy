@@ -6,16 +6,18 @@ import { KeyPool } from './key-pool.js';
 import { ModelSync } from './model-sync.js';
 import { ProxyHandler } from './proxy.js';
 import { AdminHandler } from './admin.js';
+import { UsageLedger } from './usage.js';
 
 const store = new Store(config);
 config.upstreamKeys.forEach((key, index) => store.addUpstreamKey(`Env Key ${index + 1}`, key, config.upstreamBaseUrl));
 config.clientKeys.forEach((key, index) => store.addClientKey(`Env Client ${index + 1}`, key));
 
-const pool = new KeyPool(store, config.maxInflightPerKey);
+const usage = new UsageLedger(store);
+const pool = new KeyPool(store, config.maxInflightPerKey, (event) => usage.reportHealth(event));
 const ledger = new CacheLedger(store, config.cacheTtlMs);
 const modelSync = new ModelSync(config, store, pool);
-const proxy = new ProxyHandler(config, store, pool, ledger);
-const admin = new AdminHandler(config, store, pool, ledger, modelSync);
+const proxy = new ProxyHandler(config, store, pool, ledger, usage);
+const admin = new AdminHandler(config, store, pool, ledger, usage, modelSync);
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -60,7 +62,7 @@ server.listen(config.port, config.host, () => {
 const shutdown = () => {
   server.close(async () => {
     modelSync.stop();
-    await ledger.close();
+    await Promise.all([ledger.close(), usage.close()]);
     store.close();
     process.exit(0);
   });

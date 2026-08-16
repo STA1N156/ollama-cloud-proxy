@@ -12,7 +12,9 @@ const bytes = (value) => {
   return `${size.toFixed(index ? 1 : 0)} ${units[index]}`;
 };
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
-let state = null;
+let state = { totals: {}, recent: [], upstreamKeys: [], clientKeys: [], models: [], byKeyModel: [], cache: {} };
+let currentPage = 'overview';
+const loading = new Map();
 
 function toast(message) {
   const el = $('#toast');
@@ -52,7 +54,7 @@ function badge(status) {
   return `<span class="badge ${item[1]}">${item[0]}</span>`;
 }
 
-function render() {
+function renderOverview() {
   const totals = state.totals;
   const hitRate = Number(totals.prompt_tokens) ? Number(totals.cached_tokens) / Number(totals.prompt_tokens) * 100 : 0;
   const successRate = Number(totals.requests) ? Number(totals.successes) / Number(totals.requests) * 100 : 0;
@@ -70,6 +72,11 @@ function render() {
     <td><span class="badge ${row.status >= 200 && row.status < 300 ? 'good' : 'bad'}">${row.status}</span></td><td>${seconds(row.latency_ms)}</td>
   </tr>`).join('') : '<tr><td class="empty" colspan="7">还没有请求记录</td></tr>';
 
+  $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
+  $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.hasClientKey);
+}
+
+function renderKeys() {
   $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
     <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.proxyCacheEnabled}">${key.proxyCacheEnabled ? '已开启' : '未开启'}</button>` : '<span class="badge good">固定开启</span>'}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.enabled ? '启用' : '暂停'}</td>
@@ -84,20 +91,30 @@ function render() {
     <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-client" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未生成下游访问密钥</td></tr>';
 
-  renderModels();
-  renderUsage();
+  $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.clientKeys.some((key) => key.enabled));
+}
 
+function renderCache() {
   $('#cache-entries').textContent = num(state.cache.entries);
   $('#cache-size').textContent = bytes(state.cache.indexedBytes);
   $('#rp-cache-toggle').checked = Boolean(state.cache.rpEnabled);
   $('#rp-cache-status').textContent = state.cache.rpEnabled ? '开启' : '关闭';
   $('#rp-cache-note').textContent = `已储存 ${num(state.cache.rpEntries)} 个分块 · 1 小时过期 · 上限 ${bytes(state.cache.limitBytes)}`;
-  $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
-  $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.clientKeys.some((key) => key.enabled));
+}
+
+function renderModelMeta() {
   const latest = state.models.reduce((max, model) => Math.max(max, model.synced_at || 0), 0);
   const modelCount = new Set(state.models.map((model) => model.model || model.name)).size;
   const sourceCount = new Set(state.models.map((model) => model.source_url)).size;
   $('#model-meta').textContent = state.modelSyncError ? `部分同步失败：${state.modelSyncError}` : `${modelCount} 个模型记录 · ${sourceCount} 个 API 通道 · ${latest ? `同步于 ${time(latest)}` : '尚未同步'}`;
+}
+
+function render(page = currentPage) {
+  if (page === 'overview') renderOverview();
+  else if (page === 'keys') renderKeys();
+  else if (page === 'models') { renderModels(); renderModelMeta(); }
+  else if (page === 'usage') renderUsage();
+  else if (page === 'cache') renderCache();
 }
 
 function renderModels() {
@@ -142,14 +159,24 @@ function renderUsage() {
   }).join('') : '<div class="empty">还没有添加上游密钥</div>';
 }
 
-async function load() {
-  try {
-    state = await api(`/admin/api/summary?hours=${$('#range').value}`);
+async function load(page = currentPage) {
+  if (loading.has(page)) return loading.get(page);
+  const endpoint = {
+    overview: `/admin/api/overview?hours=${$('#range').value}`,
+    keys: '/admin/api/keys',
+    models: '/admin/api/models',
+    usage: `/admin/api/usage?hours=${$('#range').value}`,
+    cache: '/admin/api/cache',
+  }[page];
+  const job = api(endpoint).then((data) => {
+    Object.assign(state, data);
     showApp();
-    render();
-  } catch (error) {
+    render(page);
+  }).catch((error) => {
     if (!$('#app-view').classList.contains('hidden')) toast(error.message);
-  }
+  }).finally(() => loading.delete(page));
+  loading.set(page, job);
+  return job;
 }
 
 $('#login-form').addEventListener('submit', async (event) => {
@@ -158,23 +185,25 @@ $('#login-form').addEventListener('submit', async (event) => {
   try {
     await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
     $('#password').value = '';
-    await load();
+    await load('overview');
   } catch (error) { $('#login-error').textContent = error.message; }
 });
 
 $('#nav').addEventListener('click', (event) => {
   const button = event.target.closest('[data-page]');
   if (!button) return;
+  currentPage = button.dataset.page;
   document.querySelectorAll('#nav button').forEach((item) => item.classList.toggle('active', item === button));
   document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
-  $(`#page-${button.dataset.page}`).classList.remove('hidden');
-  $('#page-title').textContent = { overview: '运行总览', keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存账本' }[button.dataset.page];
+  $(`#page-${currentPage}`).classList.remove('hidden');
+  $('#page-title').textContent = { overview: '运行总览', keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存账本' }[currentPage];
+  load(currentPage).catch(() => {});
 });
 
 $('#upstream-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.target));
-  try { await api('/admin/api/upstream-keys', { method: 'POST', body: JSON.stringify(body) }); event.target.reset(); toast('上游通道已导入，正在同步模型'); await load(); } catch (error) { toast(error.message); }
+  try { await api('/admin/api/upstream-keys', { method: 'POST', body: JSON.stringify(body) }); event.target.reset(); toast('上游通道已导入，正在同步模型'); await load('keys'); } catch (error) { toast(error.message); }
 });
 
 $('#client-form').addEventListener('submit', async (event) => {
@@ -185,7 +214,7 @@ $('#client-form').addEventListener('submit', async (event) => {
     event.target.reset();
     $('#new-token').textContent = result.token;
     $('#token-dialog').showModal();
-    await load();
+    await load('keys');
   } catch (error) { toast(error.message); }
 });
 
@@ -202,7 +231,7 @@ document.addEventListener('click', async (event) => {
       const useProxyCache = enabled === 'true';
       await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ useProxyCache }) });
       toast(useProxyCache ? '已使用代理缓存并替换上游缓存统计' : '已恢复透传上游缓存统计');
-      await load();
+      await load('keys');
       return;
     }
     if (action === 'copy-client') {
@@ -216,32 +245,32 @@ document.addEventListener('click', async (event) => {
       const rate = Math.min(1000, Math.max(0, Math.floor(Number(input.value) || 0)));
       await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ outputTps: rate }) });
       toast(rate ? `已限制为约 ${rate} token/s` : '已关闭 Token 减速器');
-      await load();
+      await load('keys');
       return;
     }
     if (action === 'save-client-origin') {
       const origin = button.closest('tr').querySelector('[data-client-origin]').value;
       await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ allowedOrigin: origin }) });
       toast(origin === 'codex-router' ? '已启用白名单 2，仅接受 codex-router/*' : origin ? '已启用白名单 1，请确认 New API 已透传 Origin' : '已关闭白名单');
-      await load();
+      await load('keys');
       return;
     }
     if (action.startsWith('toggle')) await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: enabled === 'true' }) });
     if (action.startsWith('delete')) await api(`${base}/${id}`, { method: 'DELETE' });
     if (action === 'test-upstream') await api(`${base}/${id}/test`, { method: 'POST' });
     toast(action === 'test-upstream' ? '密钥连接正常' : '操作已完成');
-    await load();
+    await load('keys');
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 });
 
-$('#sync-models').addEventListener('click', async () => { try { const result = await api('/admin/api/models/sync', { method: 'POST' }); toast(`已同步 ${result.count} 个模型`); await load(); } catch (error) { toast(error.message); } });
+$('#sync-models').addEventListener('click', async () => { try { const result = await api('/admin/api/models/sync', { method: 'POST' }); toast(`已同步 ${result.count} 个模型`); await load('models'); } catch (error) { toast(error.message); } });
 $('#clear-usage').addEventListener('click', async (event) => {
   if (!confirm('确定清空全部统计数据吗？密钥和缓存账本不会被删除。')) return;
   const button = event.currentTarget;
   button.disabled = true;
   try {
     await api('/admin/api/usage', { method: 'DELETE' });
-    await load();
+    if (currentPage === 'overview' || currentPage === 'usage' || currentPage === 'keys') await load(currentPage);
     toast('统计数据已清空');
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 });
@@ -251,18 +280,20 @@ $('#rp-cache-toggle').addEventListener('change', async (event) => {
   try {
     await api('/admin/api/cache/rp', { method: 'PATCH', body: JSON.stringify({ enabled: input.checked }) });
     toast(input.checked ? 'RP 缓存已开启' : 'RP 缓存已关闭');
-    await load();
+    await load('cache');
   } catch (error) {
     toast(error.message);
-    await load();
+    await load('cache');
   } finally { input.disabled = false; }
 });
-$('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀和 RP 分块吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load(); } });
-$('#refresh').addEventListener('click', load);
-$('#range').addEventListener('change', load);
+$('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀和 RP 分块吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load('cache'); } });
+$('#refresh').addEventListener('click', () => load(currentPage));
+$('#range').addEventListener('change', () => { if (currentPage === 'overview' || currentPage === 'usage') load(currentPage); });
 $('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });
 $('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });
 $('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
 
-load();
-setInterval(() => { if (!$('#app-view').classList.contains('hidden')) load(); }, 30_000);
+load('overview');
+setInterval(() => {
+  if (!$('#app-view').classList.contains('hidden') && (currentPage === 'overview' || currentPage === 'usage')) load(currentPage);
+}, 30_000);

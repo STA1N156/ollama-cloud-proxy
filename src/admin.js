@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { hmac256, randomToken, safeEqual } from './crypto.js';
 
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
+const asset = (file, type) => ({ body: fs.readFileSync(path.join(publicDir, file)), type });
+const adminHtml = asset('admin.html', 'text/html; charset=utf-8');
 const assets = new Map([
-  ['/admin', ['admin.html', 'text/html; charset=utf-8']],
-  ['/admin/', ['admin.html', 'text/html; charset=utf-8']],
-  ['/admin/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/admin/style.css', ['style.css', 'text/css; charset=utf-8']],
+  ['/admin', adminHtml],
+  ['/admin/', adminHtml],
+  ['/admin/app.js', asset('app.js', 'text/javascript; charset=utf-8')],
+  ['/admin/style.css', asset('style.css', 'text/css; charset=utf-8')],
 ]);
 
 const send = (res, status, data) => {
@@ -31,11 +33,12 @@ async function json(req) {
 const cookies = (header = '') => Object.fromEntries(header.split(';').map((item) => item.trim().split('=').map(decodeURIComponent)).filter((item) => item.length === 2));
 
 export class AdminHandler {
-  constructor(config, store, pool, ledger, modelSync) {
+  constructor(config, store, pool, ledger, usage, modelSync) {
     this.config = config;
     this.store = store;
     this.pool = pool;
     this.ledger = ledger;
+    this.usage = usage;
     this.modelSync = modelSync;
     this.loginAttempts = new Map();
   }
@@ -97,10 +100,35 @@ export class AdminHandler {
       res.setHeader('set-cookie', 'admin_session=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0');
       return send(res, 200, { ok: true });
     }
-    if (url.pathname === '/admin/api/summary' && req.method === 'GET') {
-      const hours = Math.min(24 * 90, Math.max(1, Number(url.searchParams.get('hours')) || 24));
+    const hours = () => Math.min(24 * 30, Math.max(1, Number(url.searchParams.get('hours')) || 24));
+    if (url.pathname === '/admin/api/overview' && req.method === 'GET') {
       return send(res, 200, {
-        ...this.store.summary(hours),
+        ...await this.usage.overview(hours()),
+        defaultPassword: this.config.adminPassword === '123456',
+        allowAnonymous: this.config.allowAnonymous,
+        hasClientKey: this.store.clientKeyCount() > 0,
+      });
+    }
+    if (url.pathname === '/admin/api/keys' && req.method === 'GET') {
+      await this.usage.flush();
+      return send(res, 200, {
+        upstreamKeys: this.pool.snapshot(),
+        clientKeys: this.store.listClientKeys(),
+        allowAnonymous: this.config.allowAnonymous,
+      });
+    }
+    if (url.pathname === '/admin/api/models' && req.method === 'GET') {
+      return send(res, 200, { models: this.store.listModels(), modelSyncError: this.modelSync.lastError });
+    }
+    if (url.pathname === '/admin/api/usage' && req.method === 'GET') {
+      return send(res, 200, { ...await this.usage.groups(hours()), upstreamKeys: this.pool.snapshot() });
+    }
+    if (url.pathname === '/admin/api/cache' && req.method === 'GET') {
+      return send(res, 200, { cache: await this.ledger.stats() });
+    }
+    if (url.pathname === '/admin/api/summary' && req.method === 'GET') {
+      return send(res, 200, {
+        ...await this.usage.summary(hours()),
         upstreamKeys: this.pool.snapshot(),
         clientKeys: this.store.listClientKeys(),
         models: this.store.listModels(),
@@ -170,7 +198,7 @@ export class AdminHandler {
       return send(res, 200, await this.ledger.setRpEnabled(Boolean(body.enabled)));
     }
     if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {
-      this.store.clearUsage();
+      await this.usage.clear();
       return send(res, 200, { ok: true });
     }
     return send(res, 404, { error: '接口不存在' });
@@ -182,16 +210,15 @@ export class AdminHandler {
       if (url.pathname.startsWith('/admin/api/')) return await this.api(req, res, url);
       const asset = assets.get(url.pathname);
       if (!asset) return false;
-      const body = fs.readFileSync(path.join(publicDir, asset[0]));
       res.writeHead(200, {
-        'content-type': asset[1],
-        'content-length': body.length,
+        'content-type': asset.type,
+        'content-length': asset.body.length,
         'cache-control': 'no-store',
         'content-security-policy': "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
         'x-content-type-options': 'nosniff',
         'x-frame-options': 'DENY',
       });
-      res.end(body);
+      res.end(asset.body);
       return true;
     } catch (error) {
       send(res, error.status || 500, { error: error.message || '服务器错误' });

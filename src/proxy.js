@@ -91,6 +91,28 @@ function forceUsage(request, pathname) {
   return { ...request, stream_options: { ...(request.stream_options || {}), include_usage: true } };
 }
 
+function forceUsageBody(raw, request, pathname) {
+  if (!request.stream || !['/v1/chat/completions', '/v1/completions'].includes(pathname)) return raw;
+  if (request.stream_options == null) {
+    let end = raw.length - 1;
+    while (end >= 0 && /\s/.test(String.fromCharCode(raw[end]))) end -= 1;
+    if (raw[end] === 0x7d) {
+      const field = Buffer.from(',"stream_options":{"include_usage":true}');
+      return Buffer.concat([raw.subarray(0, end), field, raw.subarray(end)]);
+    }
+  }
+  return Buffer.from(JSON.stringify(forceUsage(request, pathname)));
+}
+
+function cacheRequest(request) {
+  const selected = {};
+  for (const field of ['messages', 'input', 'prompt', 'instructions', 'tools', 'tool_choice', 'response_format']) {
+    if (request[field] != null) selected[field] = request[field];
+  }
+  if (request.text?.format != null) selected.text = { format: request.text.format };
+  return selected;
+}
+
 function usageFromObject(object, hit, totalWeight, injectCache = true, replaceUpstreamCache = false) {
   const usage = object?.usage || object?.response?.usage;
   if (!usage || typeof usage !== 'object') return null;
@@ -206,11 +228,12 @@ const retryAfterMs = (response) => {
 };
 
 export class ProxyHandler {
-  constructor(config, store, pool, ledger) {
+  constructor(config, store, pool, ledger, usage) {
     this.config = config;
     this.store = store;
     this.pool = pool;
     this.ledger = ledger;
+    this.usage = usage;
   }
 
   authenticate(req) {
@@ -288,8 +311,9 @@ export class ProxyHandler {
     const stream = request.stream === true;
     const clientWantsUsage = includeUsage(request);
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
-    const upstreamBody = forceStreamUsage ? Buffer.from(JSON.stringify(forceUsage(request, url.pathname))) : raw;
+    let upstreamBody = forceStreamUsage ? forceUsageBody(raw, request, url.pathname) : raw;
     const supportsLocalCache = ['/v1/chat/completions', '/v1/responses', '/v1/completions'].includes(url.pathname);
+    let fingerprintRequest = supportsLocalCache ? cacheRequest(request) : null;
     const excluded = new Set();
     const controller = new AbortController();
     req.once('aborted', () => controller.abort(new Error('客户端已断开')));
@@ -309,7 +333,7 @@ export class ProxyHandler {
       hit: { matched: false, exact: false, weight: 0, observedTokens: 0 },
     };
     const startCache = () => {
-      if (!cacheJob) cacheJob = this.ledger.resolve(url.pathname, request, model).then(
+      if (!cacheJob) cacheJob = this.ledger.resolve(url.pathname, fingerprintRequest, model).then(
         (value) => { cacheState.value = value; return value; },
         (error) => { cacheState.value = cacheFallback; console.error('cache lookup failed:', error.message); return cacheFallback; },
       );
@@ -386,12 +410,16 @@ export class ProxyHandler {
     }
 
     if (!upstream || !lease) {
-      this.store.queueUsage({ clientKeyId, model, endpoint: url.pathname, status: 502, latencyMs: Date.now() - started, stream, error: lastError?.message });
+      this.usage.record({ clientKeyId, model, endpoint: url.pathname, status: 502, latencyMs: Date.now() - started, stream, error: lastError?.message });
       return jsonError(res, 502, lastError?.message || '上游 API 暂时不可用');
     }
 
     const cacheable = supportsLocalCache && lease.useProxyCache;
     if (cacheable) startCache();
+    raw = null;
+    upstreamBody = null;
+    request = null;
+    fingerprintRequest = null;
     const external = lease.baseUrl !== this.store.defaultUpstreamBaseUrl;
     if (external && upstream.ok) this.pool.report(lease.id, 'healthy');
     else if (!external && finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
@@ -443,7 +471,7 @@ export class ProxyHandler {
       if (cacheable && completed && upstream.ok) startCache().then(({ fingerprint }) => {
         this.ledger.register(fingerprint, model, usage?.promptTokens || 0);
       });
-      this.store.queueUsage({
+      this.usage.record({
         upstreamKeyId: lease.id,
         clientKeyId,
         model,

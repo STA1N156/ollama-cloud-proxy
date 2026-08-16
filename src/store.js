@@ -105,6 +105,38 @@ export class Store {
         error TEXT NOT NULL DEFAULT ''
       );
 
+      CREATE TABLE IF NOT EXISTS client_usage_totals (
+        client_key_id INTEGER PRIMARY KEY,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_hourly (
+        hour INTEGER NOT NULL,
+        upstream_key_id INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        successes INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, upstream_key_id, model)
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_latency_hourly (
+        hour INTEGER NOT NULL,
+        latency_bucket_ms INTEGER NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (hour, latency_bucket_ms)
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS models (
         source_url TEXT NOT NULL,
         name TEXT NOT NULL,
@@ -118,7 +150,7 @@ export class Store {
       );
 
       CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
-      CREATE INDEX IF NOT EXISTS idx_usage_key_model ON usage_events(upstream_key_id, model);
+      DROP INDEX IF EXISTS idx_usage_key_model;
       CREATE INDEX IF NOT EXISTS idx_cache_expiry ON prompt_cache(expires_at);
       CREATE INDEX IF NOT EXISTS idx_cache_updated ON prompt_cache(updated_at);
       CREATE INDEX IF NOT EXISTS idx_cache_rp_expiry ON prompt_cache_rp(expires_at);
@@ -168,14 +200,9 @@ export class Store {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_models_source ON models(source_url)');
     this.clientAccess = new Map();
     this.reloadClientAccess();
-    this.usageQueue = [];
-    this.usageTimer = setInterval(() => this.flushUsage(), 200);
-    this.usageTimer.unref();
   }
 
   close() {
-    clearInterval(this.usageTimer);
-    this.flushUsage();
     this.db.close();
   }
 
@@ -225,11 +252,6 @@ export class Store {
       .run(enabled ? 1 : 0, now(), id);
   }
 
-  updateUpstreamHealth(id, status, error = '', cooldownUntil = 0) {
-    this.db.prepare('UPDATE upstream_keys SET status=?, last_error=?, cooldown_until=?, updated_at=? WHERE id=?')
-      .run(status, error.slice(0, 500), cooldownUntil, now(), id);
-  }
-
   deleteUpstreamKey(id) {
     const row = this.db.prepare('SELECT base_url FROM upstream_keys WHERE id=?').get(id);
     this.db.prepare('DELETE FROM upstream_keys WHERE id=?').run(id);
@@ -257,12 +279,12 @@ export class Store {
   listClientKeys() {
     return this.db.prepare(`
       SELECT c.id, c.label, c.last4, c.enabled, c.output_tps, c.allowed_origin, c.created_at, c.token_secret!='' copyable,
-        COALESCE(SUM(u.prompt_tokens), 0) prompt_tokens,
-        COALESCE(SUM(u.completion_tokens), 0) completion_tokens,
-        COALESCE(SUM(u.cached_tokens), 0) cached_tokens,
-        COALESCE(SUM(u.total_tokens), 0) total_tokens
-      FROM client_keys c LEFT JOIN usage_events u ON u.client_key_id=c.id
-      GROUP BY c.id ORDER BY c.id
+        COALESCE(u.prompt_tokens, 0) prompt_tokens,
+        COALESCE(u.completion_tokens, 0) completion_tokens,
+        COALESCE(u.cached_tokens, 0) cached_tokens,
+        COALESCE(u.total_tokens, 0) total_tokens
+      FROM client_keys c LEFT JOIN client_usage_totals u ON u.client_key_id=c.id
+      ORDER BY c.id
     `).all().map((row) => ({
       ...row,
       id: Number(row.id),
@@ -321,73 +343,6 @@ export class Store {
     this.reloadClientAccess(id);
   }
 
-  queueUsage(event) {
-    this.usageQueue.push({ createdAt: now(), ...event });
-    if (this.usageQueue.length >= 256) this.flushUsage();
-  }
-
-  flushUsage() {
-    if (!this.usageQueue.length) return;
-    const batch = this.usageQueue.splice(0, 512);
-    const insert = this.db.prepare(`
-      INSERT INTO usage_events(created_at, upstream_key_id, client_key_id, model, endpoint,
-        prompt_tokens, completion_tokens, cached_tokens, total_tokens, status, latency_ms, stream, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      for (const item of batch) insert.run(
-        item.createdAt, item.upstreamKeyId ?? null, item.clientKeyId ?? null, item.model || '', item.endpoint,
-        item.promptTokens || 0, item.completionTokens || 0, item.cachedTokens || 0, item.totalTokens || 0,
-        item.status || 0, item.latencyMs || 0, item.stream ? 1 : 0, (item.error || '').slice(0, 500),
-      );
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      this.usageQueue.unshift(...batch);
-      console.error('usage write failed:', error.message);
-    }
-  }
-
-  clearUsage() {
-    this.usageQueue.length = 0;
-    this.db.prepare('DELETE FROM usage_events').run();
-  }
-
-  summary(hours = 24) {
-    this.flushUsage();
-    const since = now() - Math.max(1, hours) * 3_600_000;
-    const totals = this.db.prepare(`
-      SELECT COUNT(*) requests,
-        SUM(CASE WHEN status BETWEEN 200 AND 299 THEN 1 ELSE 0 END) successes,
-        COALESCE(SUM(prompt_tokens), 0) prompt_tokens,
-        COALESCE(SUM(completion_tokens), 0) completion_tokens,
-        COALESCE(SUM(cached_tokens), 0) cached_tokens
-      FROM usage_events WHERE created_at >= ?
-    `).get(since);
-    const p95Index = Math.max(0, Math.ceil(Number(totals.requests) * 0.95) - 1);
-    const p95 = this.db.prepare(`
-      SELECT latency_ms FROM usage_events WHERE created_at >= ?
-      ORDER BY latency_ms LIMIT 1 OFFSET ?
-    `).get(since, p95Index);
-    totals.p95_latency_ms = Number(p95?.latency_ms || 0);
-    const byKeyModel = this.db.prepare(`
-      SELECT u.upstream_key_id key_id, COALESCE(k.label, '未分配') key_label, u.model,
-        COUNT(*) requests, SUM(u.prompt_tokens) prompt_tokens,
-        SUM(u.completion_tokens) completion_tokens, SUM(u.cached_tokens) cached_tokens
-      FROM usage_events u LEFT JOIN upstream_keys k ON k.id=u.upstream_key_id
-      WHERE u.created_at >= ? GROUP BY u.upstream_key_id, u.model
-      ORDER BY u.upstream_key_id, SUM(u.prompt_tokens + u.completion_tokens) DESC
-    `).all(since);
-    const recent = this.db.prepare(`
-      SELECT u.created_at, COALESCE(k.label, '—') key_label, u.model, u.endpoint,
-        u.prompt_tokens, u.completion_tokens, u.cached_tokens, u.status, u.latency_ms, u.stream
-      FROM usage_events u LEFT JOIN upstream_keys k ON k.id=u.upstream_key_id
-      ORDER BY u.id DESC LIMIT 80
-    `).all();
-    return { totals, byKeyModel, recent };
-  }
-
   replaceModels(sourceUrl, models) {
     const source = normalizeBaseUrl(sourceUrl, this.defaultUpstreamBaseUrl);
     const stamp = now();
@@ -413,10 +368,15 @@ export class Store {
 
   listModels() {
     return this.db.prepare(`
-      SELECT m.*,
-        COALESCE((SELECT k.label FROM upstream_keys k WHERE k.base_url=m.source_url ORDER BY k.id LIMIT 1), m.source_url) source_label,
-        (SELECT COUNT(*) FROM upstream_keys k WHERE k.base_url=m.source_url AND k.enabled=1) key_count
-      FROM models m ORDER BY m.source_url, m.name
+      WITH sources AS (
+        SELECT base_url,
+          (SELECT label FROM upstream_keys first WHERE first.base_url=keys.base_url ORDER BY id LIMIT 1) source_label,
+          SUM(enabled=1) key_count
+        FROM upstream_keys keys GROUP BY base_url
+      )
+      SELECT m.*, COALESCE(s.source_label, m.source_url) source_label, COALESCE(s.key_count, 0) key_count
+      FROM models m LEFT JOIN sources s ON s.base_url=m.source_url
+      ORDER BY m.source_url, m.name
     `).all().map((row) => ({
       ...row,
       size: Number(row.size),

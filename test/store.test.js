@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/store.js';
+import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
 
-test('旧数据库自动迁移，新下游密钥可复制并统计累计用量', (t) => {
+test('旧数据库自动迁移，新下游密钥可复制并统计累计用量', async (t) => {
   const config = tempConfig();
   const legacy = new DatabaseSync(config.databasePath);
   legacy.exec(`
@@ -22,7 +23,8 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   legacy.close();
 
   const store = new Store(config);
-  t.after(() => { store.close(); config.cleanup(); });
+  const usage = new UsageLedger(store);
+  t.after(async () => { await usage.close(); store.close(); config.cleanup(); });
   const upstreamId = store.addUpstreamKey('上游一', 'upstream-one');
   assert.equal(store.listClientKeys()[0].copyable, false);
   assert.throws(() => store.getClientKeyToken(1), /旧版密钥无法恢复/);
@@ -38,7 +40,7 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   store.setClientAllowedOrigin(id, 'codex-router');
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'codex-router');
   assert.throws(() => store.setClientAllowedOrigin(id, 'https://example.com'), /不支持的白名单/);
-  store.queueUsage({
+  usage.record({
     upstreamKeyId: upstreamId,
     clientKeyId: id,
     model: 'model-a',
@@ -50,13 +52,12 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
     status: 200,
     latencyMs: 20,
   });
-  store.flushUsage();
+  const firstSummary = await usage.summary(1);
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 12);
-  const firstSummary = store.summary(1);
   assert.equal(firstSummary.totals.p95_latency_ms, 20);
   assert.equal(Number(firstSummary.byKeyModel[0].key_id), upstreamId);
   for (let index = 1; index < 20; index += 1) {
-    store.queueUsage({
+    usage.record({
       clientKeyId: id,
       model: 'model-a',
       endpoint: '/v1/chat/completions',
@@ -64,10 +65,9 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
       latencyMs: index * 1000,
     });
   }
-  store.flushUsage();
-  assert.equal(store.summary(1).totals.p95_latency_ms, 18_000);
+  assert.equal((await usage.summary(1)).totals.p95_latency_ms, 18_000);
 
-  store.clearUsage();
+  await usage.clear();
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 0);
   store.setClientEnabled(id, false);
   assert.equal(store.getClientAccess('ocp_copy_me'), null);
