@@ -106,7 +106,7 @@ function forceUsageBody(raw, request, pathname) {
 
 function cacheRequest(request) {
   const selected = {};
-  for (const field of ['messages', 'input', 'prompt', 'instructions', 'tools', 'tool_choice', 'response_format']) {
+  for (const field of ['messages', 'input', 'prompt', 'instructions', 'tools', 'response_format']) {
     if (request[field] != null) selected[field] = request[field];
   }
   if (request.text?.format != null) selected.text = { format: request.text.format };

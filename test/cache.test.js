@@ -34,6 +34,41 @@ test('工具数组顺序变化不会误判为命中', () => {
   );
 });
 
+test('工具控制方式和随机调用 ID 不会破坏缓存', () => {
+  const key = Buffer.alloc(32, 4);
+  const request = (id, toolChoice, reversed = false) => ({
+    tool_choice: toolChoice,
+    tools: [{ type: 'function', function: { name: 'web_search', parameters: { type: 'object' } } }],
+    messages: [
+      { role: 'user', content: '搜索 Ollama 新闻' },
+      { role: 'assistant', content: '', tool_calls: [reversed
+        ? { function: { arguments: '{"query":"Ollama"}', name: 'web_search' }, type: 'function', id }
+        : { id, type: 'function', function: { name: 'web_search', arguments: '{"query":"Ollama"}' } }] },
+      { role: 'tool', tool_call_id: id, content: '搜索结果' },
+    ],
+  });
+  const required = buildFingerprint('/v1/chat/completions', request('call_random_a', 'required'), key);
+  const automatic = buildFingerprint('/v1/chat/completions', request('call_random_b', 'auto', true), key);
+  assert.deepEqual(required.entries, automatic.entries);
+});
+
+test('不同工具参数和返回内容仍然不会误判为命中', () => {
+  const key = Buffer.alloc(32, 3);
+  const request = (query, result) => ({
+    tools: [{ type: 'function', function: { name: 'web_search', parameters: { type: 'object' } } }],
+    messages: [
+      { role: 'user', content: '搜索新闻' },
+      { role: 'assistant', tool_calls: [{ id: 'call_random', type: 'function', function: { name: 'web_search', arguments: JSON.stringify({ query }) } }] },
+      { role: 'tool', tool_call_id: 'call_random', content: result },
+    ],
+  });
+  const ollama = buildFingerprint('/v1/chat/completions', request('Ollama', '结果 A'), key);
+  const changedArguments = buildFingerprint('/v1/chat/completions', request('DeepSeek', '结果 A'), key);
+  const changedResult = buildFingerprint('/v1/chat/completions', request('Ollama', '结果 B'), key);
+  assert.notEqual(ollama.entries.at(-1).hash, changedArguments.entries.at(-1).hash);
+  assert.notEqual(ollama.entries.at(-1).hash, changedResult.entries.at(-1).hash);
+});
+
 test('Responses 输出 Schema 变化不会误判为命中', () => {
   const key = Buffer.alloc(32, 9);
   const request = { input: 'x', text: { format: { type: 'json_schema', name: 'a' } } };
@@ -112,6 +147,7 @@ test('缓存大小统计实际哈希索引空间，不累计原始上下文长�
     messages: [{ role: 'user', content: 'x'.repeat(1024 * 1024) }],
   }, store.masterKey);
   ledger.register(fingerprint, 'model-a', 1000);
+  await ledger.flush();
   const stats = await ledger.stats();
   assert.equal(stats.entries, 1);
   assert.ok(stats.indexedBytes < fingerprint.totalWeight / 4);
@@ -171,7 +207,7 @@ test('RP 缓存默认关闭但持续储存，开启后立即命中并在一小�
   ledger = new CacheLedger(store, config.cacheTtlMs);
   assert.equal((await ledger.stats()).rpEnabled, true);
   store.db.prepare('UPDATE prompt_cache_rp SET expires_at=?').run(Date.now() - 1);
-  assert.equal((await ledger.stats()).rpEntries, 0);
+  assert.equal((await ledger.lookup(moved, 'model-b')).matched, false);
   await ledger.clear();
   assert.equal((await ledger.stats()).rpEntries, 0);
 });

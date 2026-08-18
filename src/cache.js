@@ -11,6 +11,25 @@ const canonicalize = (value) => {
 
 const stable = (value) => JSON.stringify(canonicalize(value));
 
+const toolReference = (ids, value) => {
+  if (typeof value !== 'string') return value;
+  if (!ids.has(value)) ids.set(value, `call_${ids.size + 1}`);
+  return ids.get(value);
+};
+
+function normalizeToolReferences(value, ids, parent = '') {
+  if (Array.isArray(value)) return value.map((item) => normalizeToolReferences(item, ids, parent));
+  if (!value || typeof value !== 'object') return value;
+  const type = typeof value.type === 'string' ? value.type : '';
+  const callItem = parent === 'tool_calls' || /(?:^|_)(?:tool|function|computer|web_search)_(?:call|use)(?:_|$)/.test(type);
+  return Object.fromEntries(Object.keys(value).sort().map((name) => {
+    const item = value[name];
+    const reference = name === 'tool_call_id' || name === 'call_id' || name === 'tool_use_id';
+    if (reference || (name === 'id' && callItem)) return [name, toolReference(ids, item)];
+    return [name, normalizeToolReferences(item, ids, name)];
+  }));
+}
+
 const RP_MIN_REQUEST = 4096;
 const RP_MIN_CHUNK = 512;
 const RP_AVG_CHUNK = 2048;
@@ -65,7 +84,7 @@ function buildRpChunks(endpoint, segments, key) {
 
 export function buildFingerprint(endpoint, request, key) {
   const base = {};
-  for (const field of ['instructions', 'tools', 'tool_choice', 'response_format']) {
+  for (const field of ['instructions', 'tools', 'response_format']) {
     if (request[field] != null) base[field] = request[field];
   }
   if (request.text?.format != null) base.text_format = request.text.format;
@@ -80,6 +99,7 @@ export function buildFingerprint(endpoint, request, key) {
   let hash = hmac256(key, `${endpoint}\u001f`);
   const entries = [];
   const segments = [];
+  const toolIds = new Map();
   if (Object.keys(base).length) {
     const segment = stable(base);
     segments.push(segment);
@@ -88,7 +108,7 @@ export function buildFingerprint(endpoint, request, key) {
     entries.push({ hash, weight });
   }
   for (const block of blocks) {
-    const segment = stable(block);
+    const segment = stable(normalizeToolReferences(block, toolIds));
     segments.push(segment);
     weight += 1 + Buffer.byteLength(segment);
     hash = hmac256(key, `${hash}\u001e${segment}`);
