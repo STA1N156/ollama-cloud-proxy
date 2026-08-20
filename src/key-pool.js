@@ -1,7 +1,6 @@
 export class KeyPool {
-  constructor(store, maxInflight, reportHealth) {
+  constructor(store, reportHealth) {
     this.store = store;
-    this.maxInflight = maxInflight;
     this.reportHealth = reportHealth;
     this.keys = new Map();
     this.schedules = new Map();
@@ -41,7 +40,8 @@ export class KeyPool {
     const keys = this.sortedKeys;
     const eligible = keys.filter((key) => this.eligible(key, model, excluded, sourceUrl));
     if (!eligible.length) return null;
-    const available = eligible.filter((key) => key.base_url !== this.store.defaultUpstreamBaseUrl || key.inFlight < this.maxInflight);
+    const ready = eligible.filter((key) => key.inFlight < this.concurrencyLimit(key));
+    const available = this.quotaBalanced(ready);
     if (!available.length) return undefined;
 
     const scheduleKey = `${sourceUrl || '*'}\0${model}`;
@@ -77,6 +77,21 @@ export class KeyPool {
         this.wake();
       },
     };
+  }
+
+  concurrencyLimit(key) {
+    if (key.base_url !== this.store.defaultUpstreamBaseUrl) return Infinity;
+    return key.tier === 'pro' ? 3 : 10;
+  }
+
+  quotaBalanced(keys) {
+    const fresh = keys.filter((key) => key.base_url === this.store.defaultUpstreamBaseUrl
+      && Number.isFinite(key.quota?.weekly?.usage)
+      && Date.now() - Number(key.quotaFetchedAt) < 10 * 60_000);
+    if (fresh.length < 2) return keys;
+    const lowest = Math.min(...fresh.map((key) => key.quota.weekly.usage));
+    const balanced = new Set(fresh.filter((key) => key.quota.weekly.usage <= lowest + 0.01).map((key) => key.id));
+    return keys.filter((key) => key.base_url !== this.store.defaultUpstreamBaseUrl || !fresh.includes(key) || balanced.has(key.id));
   }
 
   async acquire(model, excluded = new Set(), signal, sourceUrl) {
@@ -122,11 +137,25 @@ export class KeyPool {
     this.wake();
   }
 
+  updateQuota(id, quota, error = '') {
+    const key = this.keys.get(id);
+    if (!key) return;
+    key.quotaCheckedAt = Date.now();
+    key.quotaError = error.slice(0, 300);
+    if (quota) {
+      key.quota = quota;
+      key.quotaFetchedAt = key.quotaCheckedAt;
+      key.quotaError = '';
+    }
+    this.schedules.clear();
+  }
+
   snapshot() {
     return [...this.keys.values()].map(({ secret, secret_hash, ...key }) => ({
       ...key,
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,
+      concurrencyLimit: key.base_url === this.store.defaultUpstreamBaseUrl ? (key.tier === 'pro' ? 3 : 10) : null,
       proxyCacheEnabled: key.base_url === this.store.defaultUpstreamBaseUrl || key.use_proxy_cache,
       proxyCacheConfigurable: key.base_url !== this.store.defaultUpstreamBaseUrl,
     }));

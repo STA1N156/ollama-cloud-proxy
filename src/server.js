@@ -4,6 +4,7 @@ import { Store } from './store.js';
 import { CacheLedger } from './cache.js';
 import { KeyPool } from './key-pool.js';
 import { ModelSync } from './model-sync.js';
+import { QuotaSync } from './quota-sync.js';
 import { ProxyHandler } from './proxy.js';
 import { AdminHandler } from './admin.js';
 import { UsageLedger } from './usage.js';
@@ -13,11 +14,12 @@ config.upstreamKeys.forEach((key, index) => store.addUpstreamKey(`Env Key ${inde
 config.clientKeys.forEach((key, index) => store.addClientKey(`Env Client ${index + 1}`, key));
 
 const usage = new UsageLedger(store);
-const pool = new KeyPool(store, config.maxInflightPerKey, (event) => usage.reportHealth(event));
+const pool = new KeyPool(store, (event) => usage.reportHealth(event));
 const ledger = new CacheLedger(store, config.cacheTtlMs);
 const modelSync = new ModelSync(config, store, pool);
+const quotaSync = new QuotaSync(config, store, pool);
 const proxy = new ProxyHandler(config, store, pool, ledger, usage);
-const admin = new AdminHandler(config, store, pool, ledger, usage, modelSync);
+const admin = new AdminHandler(config, store, pool, ledger, usage, modelSync, quotaSync);
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -57,11 +59,13 @@ server.listen(config.port, config.host, () => {
   if (config.adminPassword === '123456') console.warn('警告：ADMIN_PASSWORD 正在使用默认值 123456');
   if (!config.allowAnonymous && !store.clientKeyCount()) console.warn('请登录 /admin 创建下游访问密钥');
   modelSync.start();
+  quotaSync.start();
 });
 
 const shutdown = () => {
   server.close(async () => {
     modelSync.stop();
+    quotaSync.stop();
     await Promise.all([ledger.close(), usage.close()]);
     store.close();
     process.exit(0);

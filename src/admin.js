@@ -33,13 +33,14 @@ async function json(req) {
 const cookies = (header = '') => Object.fromEntries(header.split(';').map((item) => item.trim().split('=').map(decodeURIComponent)).filter((item) => item.length === 2));
 
 export class AdminHandler {
-  constructor(config, store, pool, ledger, usage, modelSync) {
+  constructor(config, store, pool, ledger, usage, modelSync, quotaSync) {
     this.config = config;
     this.store = store;
     this.pool = pool;
     this.ledger = ledger;
     this.usage = usage;
     this.modelSync = modelSync;
+    this.quotaSync = quotaSync;
     this.loginAttempts = new Map();
   }
 
@@ -104,6 +105,7 @@ export class AdminHandler {
     } else await response.body?.cancel();
     this.pool.report(id, 'healthy');
     this.modelSync.sync().catch(() => {});
+    this.quotaSync?.refresh(true).catch(() => {});
     return { ok: true };
   }
 
@@ -137,7 +139,10 @@ export class AdminHandler {
       return send(res, 200, { models: this.store.listModels(), modelSyncError: this.modelSync.lastError });
     }
     if (url.pathname === '/admin/api/usage' && req.method === 'GET') {
-      return send(res, 200, { ...await this.usage.groups(hours()), upstreamKeys: this.pool.snapshot() });
+      await this.quotaSync?.refresh(url.searchParams.get('refresh') === '1');
+      return send(res, 200, {
+        upstreamKeys: this.pool.snapshot().filter((key) => key.base_url === this.store.defaultUpstreamBaseUrl),
+      });
     }
     if (url.pathname === '/admin/api/cache' && req.method === 'GET') {
       return send(res, 200, { cache: await this.ledger.stats() });
@@ -159,6 +164,7 @@ export class AdminHandler {
       const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''), Boolean(body.useProxyCache), body.tier);
       this.pool.reload();
       this.modelSync.sync().catch(() => {});
+      this.quotaSync?.refresh(true).catch(() => {});
       return send(res, 201, { id });
     }
     const upstream = url.pathname.match(/^\/admin\/api\/upstream-keys\/(\d+)(?:\/(test))?$/);

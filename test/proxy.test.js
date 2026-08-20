@@ -197,7 +197,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   store.addClientKey('site', 'site-key', 0, 'https://sta1n156.github.io');
   store.addClientKey('router', 'router-key', 0, 'codex-router');
   const usage = new UsageLedger(store);
-  const pool = new KeyPool(store, 8, (event) => usage.reportHealth(event));
+  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
   const ledger = new CacheLedger(store, config.cacheTtlMs);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
@@ -344,7 +344,7 @@ test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并�
   const externalKeyId = store.addUpstreamKey('External', 'external-key', `${externalOrigin}/v1`);
   store.addClientKey('Slow client', 'slow-client', 20);
   const usage = new UsageLedger(store);
-  const pool = new KeyPool(store, 4, (event) => usage.reportHealth(event));
+  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
   const modelSync = new ModelSync(config, store, pool);
   assert.equal(await modelSync.sync(), 2);
   assert.deepEqual(store.listModels().map((item) => [item.source_label, item.name]).sort(), [
@@ -411,7 +411,7 @@ test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
   for (let index = 1; index <= 11; index += 1) store.addUpstreamKey(`Key ${index}`, `key-${index}`);
   store.addClientKey('client', 'client-key');
   const usage = new UsageLedger(store);
-  const pool = new KeyPool(store, 32, (event) => usage.reportHealth(event));
+  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
   const ledger = new CacheLedger(store, config.cacheTtlMs);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
@@ -463,7 +463,7 @@ test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {
   store.addUpstreamKey('C', 'key-c');
   store.addClientKey('client', 'client-key');
   const usage = new UsageLedger(store);
-  const pool = new KeyPool(store, 8, (event) => usage.reportHealth(event));
+  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
   const ledger = new CacheLedger(store, config.cacheTtlMs);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));

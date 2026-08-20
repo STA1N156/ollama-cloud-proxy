@@ -25,6 +25,7 @@ const list = (name) => (process.env[name] ?? '')
 
 const dataDir = path.resolve(process.env.DATA_DIR || './data');
 const upstreamBaseUrl = (process.env.UPSTREAM_BASE_URL || 'https://ollama.com/v1').replace(/\/$/, '');
+const quotaSyncUrl = process.env.QUOTA_SYNC_URL || new URL('/api/usage', `${upstreamBaseUrl}/`).toString();
 
 export const config = {
   host: process.env.HOST || '0.0.0.0',
@@ -37,8 +38,9 @@ export const config = {
   upstreamBaseUrl,
   modelSyncUrl: process.env.MODEL_SYNC_URL || (new URL(upstreamBaseUrl).hostname === 'ollama.com' ? 'https://ollama.com/api/tags' : `${upstreamBaseUrl}/models`),
   modelSyncIntervalMs: duration('MODEL_SYNC_INTERVAL', 10 * 60_000),
+  quotaSyncUrl,
+  quotaSyncIntervalMs: duration('QUOTA_SYNC_INTERVAL', 2 * 60_000),
   cacheTtlMs: duration('CACHE_TTL', 60 * 60_000),
-  maxInflightPerKey: integer('MAX_INFLIGHT_PER_KEY', 32),
   maxRequestBytes: integer('MAX_REQUEST_BYTES', 32 * 1024 * 1024),
   responseHeaderTimeoutMs: duration('RESPONSE_HEADER_TIMEOUT', 600_000),
   retryCount: Math.min(10, integer('UPSTREAM_RETRIES', 10)),

@@ -8,7 +8,7 @@
 
 - `/v1/chat/completions`、`/v1/responses`、`/v1/completions`、`/v1/embeddings` 等 OpenAI 兼容转发
 - SSE 流式响应、tools、`tool_choice`、vision、结构化输出和 `reasoning_content` 思考字段兼容
-- 可在后台导入多个 OpenAI 兼容 API 地址与加密密钥，按实际模型自动路由和公平轮询
+- 可在后台导入多个 OpenAI 兼容 API 地址与加密密钥，按实际模型自动路由；Ollama 密钥按官方周额度智能均摊
 - 401/403 自动停用，429 按 `Retry-After` 冷却，临时错误自动换钥重试
 - 仅当 HTTP 400 响应包含 `Internal Server Error` 时额外重试两次，普通参数错误不会重试
 - 同时兼容 Ollama `/api/tags` 与 OpenAI `/v1/models`，后台按 API 地址分组，下游返回全部可用模型
@@ -38,7 +38,7 @@ npm start
 
 新版本会加密保存新生成的下游访问密钥，管理员可以在密钥页再次复制。旧版本只保存了不可逆哈希，升级后原有密钥仍可使用，但需要重新生成才能在后台复制。
 
-Ollama Cloud 密钥默认是 `MAX`（权重5），可在密钥表中改为 `PRO`（权重1）。轮询按模型分别计算，两个账号都可用时，一个 MAX 和一个 PRO 每120次请求约分配100次与20次；账号冷却、暂停或达到并发上限时会临时绕开。外部 OpenAI API 不使用此等级。
+Ollama Cloud 密钥默认是 `MAX`（权重5、单密钥并发10），可在密钥表中改为 `PRO`（权重1、单密钥并发3）。服务每2分钟读取一次官方 5 小时和周额度，优先选择周用量较低的账号；用量相差不超过1个百分点时按模型恢复 MAX/PRO 的5:1分配。账号冷却、暂停或达到固定并发上限时会临时绕开，外部 OpenAI API 不限并发且不参与额度均摊。
 
 示例：
 
@@ -105,8 +105,9 @@ Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses 
 | `PROXY_API_KEYS` | 空 | 可选，逗号或换行分隔的下游密钥 |
 | `ALLOW_ANONYMOUS` | `false` | 是否允许无下游密钥调用 |
 | `CACHE_TTL` | `1h` | 缓存有效期 |
-| `MAX_INFLIGHT_PER_KEY` | `32` | 单个 Ollama Cloud 密钥最大同时请求数；外部 API 不限 |
 | `MODEL_SYNC_INTERVAL` | `10m` | 模型同步间隔 |
+| `QUOTA_SYNC_INTERVAL` | `2m` | Ollama 官方额度刷新间隔 |
+| `QUOTA_SYNC_URL` | `https://ollama.com/api/usage` | Ollama 官方额度接口 |
 | `UPSTREAM_RETRIES` | `10` | 发送响应前最多尝试的不同密钥数，最高10 |
 | `UPSTREAM_BASE_URL` | `https://ollama.com/v1` | OpenAI 兼容上游地址 |
 | `MODEL_SYNC_URL` | `https://ollama.com/api/tags` | 模型列表地址 |

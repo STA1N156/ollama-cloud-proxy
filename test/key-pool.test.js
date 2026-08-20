@@ -9,7 +9,7 @@ test('同一模型在健康密钥间公平轮询', async (t) => {
   const store = new Store(config);
   store.addUpstreamKey('A', 'key-a');
   store.addUpstreamKey('B', 'key-b');
-  const pool = new KeyPool(store, 1);
+  const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
 
   const ids = [];
@@ -27,7 +27,7 @@ test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {
   const maxId = store.addUpstreamKey('MAX', 'key-max');
   const proId = store.addUpstreamKey('PRO', 'key-pro');
   store.setUpstreamTier(proId, 'pro');
-  const pool = new KeyPool(store, 32);
+  const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
 
   const assigned = new Map([[maxId, 0], [proId, 0]]);
@@ -53,12 +53,40 @@ test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {
   assert.deepEqual(modelB, [maxId]);
 });
 
+test('优先使用周额度较低的 Ollama 密钥，额度接近后恢复等级权重', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const maxId = store.addUpstreamKey('MAX', 'key-max');
+  const proId = store.addUpstreamKey('PRO', 'key-pro');
+  store.setUpstreamTier(proId, 'pro');
+  const pool = new KeyPool(store);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  pool.updateQuota(maxId, { weekly: { usage: 0.8 } });
+  pool.updateQuota(proId, { weekly: { usage: 0.2 } });
+  for (let index = 0; index < 12; index += 1) {
+    const lease = await pool.acquire('model-a');
+    assert.equal(lease.id, proId);
+    lease.release();
+  }
+
+  pool.updateQuota(maxId, { weekly: { usage: 0.4 } });
+  pool.updateQuota(proId, { weekly: { usage: 0.4 } });
+  const assigned = new Map([[maxId, 0], [proId, 0]]);
+  for (let index = 0; index < 6; index += 1) {
+    const lease = await pool.acquire('model-a');
+    assigned.set(lease.id, assigned.get(lease.id) + 1);
+    lease.release();
+  }
+  assert.deepEqual([...assigned.values()], [5, 1]);
+});
+
 test('失效密钥自动退出轮询', async (t) => {
   const config = tempConfig();
   const store = new Store(config);
   store.addUpstreamKey('A', 'key-a');
   store.addUpstreamKey('B', 'key-b');
-  const pool = new KeyPool(store, 1);
+  const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
   pool.report(1, 'invalid', 'HTTP 401');
   const lease = await pool.acquire('model-a');
@@ -66,12 +94,13 @@ test('失效密钥自动退出轮询', async (t) => {
   lease.release();
 });
 
-test('高并发时遵守单密钥上限并保持均匀分配', async (t) => {
+test('高并发时 MAX 固定10并发、PRO 固定3并发', async (t) => {
   const config = tempConfig();
   const store = new Store(config);
   store.addUpstreamKey('A', 'key-a');
-  store.addUpstreamKey('B', 'key-b');
-  const pool = new KeyPool(store, 3);
+  const proId = store.addUpstreamKey('B', 'key-b');
+  store.setUpstreamTier(proId, 'pro');
+  const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
 
   const active = new Map([[1, 0], [2, 0]]);
@@ -88,15 +117,16 @@ test('高并发时遵守单密钥上限并保持均匀分配', async (t) => {
     lease.release();
   }));
 
-  assert.deepEqual([...assigned.values()], [30, 30]);
-  assert.ok([...peak.values()].every((value) => value <= 3));
+  assert.ok(assigned.get(1) > assigned.get(2));
+  assert.ok(peak.get(1) <= 10);
+  assert.ok(peak.get(2) <= 3);
 });
 
 test('外部 API 密钥不受单密钥并发上限限制', (t) => {
   const config = tempConfig();
   const store = new Store(config);
   store.addUpstreamKey('External', 'key-a', 'https://external.example/v1');
-  const pool = new KeyPool(store, 1);
+  const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
 
   const first = pool.tryAcquire('model-a');
@@ -114,7 +144,7 @@ test('只把模型请求分配给提供该模型的 API 通道', async (t) => {
   store.addUpstreamKey('External', 'key-b', 'https://external.example/v1');
   store.replaceModels(config.upstreamBaseUrl, [{ name: 'model-a' }, { name: 'shared' }]);
   store.replaceModels('https://external.example/v1', [{ name: 'model-b' }, { name: 'shared' }]);
-  const pool = new KeyPool(store, 2);
+  const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
 
   const modelB = await pool.acquire('model-b');

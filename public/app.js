@@ -12,7 +12,7 @@ const bytes = (value) => {
   return `${size.toFixed(index ? 1 : 0)} ${units[index]}`;
 };
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
-let state = { totals: {}, recent: [], upstreamKeys: [], clientKeys: [], models: [], byKeyModel: [], cache: {} };
+let state = { totals: {}, recent: [], upstreamKeys: [], clientKeys: [], models: [], cache: {} };
 let currentPage = 'overview';
 const loading = new Map();
 
@@ -80,7 +80,7 @@ function renderKeys() {
   $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
     <td>${key.tierConfigurable ? `<select class="tier-select" data-upstream-tier data-id="${key.id}" aria-label="${esc(key.label)} 等级"><option value="max" ${key.tier === 'max' ? 'selected' : ''}>MAX · 5</option><option value="pro" ${key.tier === 'pro' ? 'selected' : ''}>PRO · 1</option></select>` : '<span class="muted">—</span>'}</td>
-    <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.proxyCacheEnabled}">${key.proxyCacheEnabled ? '已开启' : '未开启'}</button>` : '<span class="badge good">固定开启</span>'}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.enabled ? '启用' : '暂停'}</td>
+    <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.proxyCacheEnabled}">${key.proxyCacheEnabled ? '已开启' : '未开启'}</button>` : '<span class="badge good">固定开启</span>'}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.concurrencyLimit == null ? '不限' : key.concurrencyLimit}${key.enabled ? '' : ' · 暂停'}</td>
     <td><div class="row-actions"><button data-action="test-upstream" data-id="${key.id}">测试</button><button data-action="toggle-upstream" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-upstream" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="8">请先导入一个上游 API 通道</td></tr>';
 
@@ -131,42 +131,41 @@ function renderModels() {
 }
 
 function renderUsage() {
-  const root = $('#usage-groups');
-  const opened = new Set([...root.querySelectorAll('.usage-group[open]')].map((item) => item.dataset.keyId));
-  const rowsByKey = new Map();
-  for (const row of state.byKeyModel) {
-    const id = row.key_id == null ? `missing:${row.key_label}` : String(row.key_id);
-    if (!rowsByKey.has(id)) rowsByKey.set(id, []);
-    rowsByKey.get(id).push(row);
-  }
-  const known = new Set(state.upstreamKeys.map((key) => String(key.id)));
-  const groups = state.upstreamKeys.map((key) => ({ id: String(key.id), label: key.label, last4: key.last4, rows: rowsByKey.get(String(key.id)) || [] }));
-  for (const [id, rows] of rowsByKey) {
-    if (!known.has(id)) groups.push({ id, label: rows[0].key_label, last4: '', rows });
-  }
-  root.innerHTML = groups.length ? groups.map((group) => {
-    const rows = [...group.rows].sort((a, b) => (Number(b.prompt_tokens) + Number(b.completion_tokens)) - (Number(a.prompt_tokens) + Number(a.completion_tokens)) || Number(b.requests) - Number(a.requests));
-    const requests = rows.reduce((sum, row) => sum + Number(row.requests), 0);
-    const total = rows.reduce((sum, row) => sum + Number(row.prompt_tokens) + Number(row.completion_tokens), 0);
-    const cached = rows.reduce((sum, row) => sum + Number(row.cached_tokens), 0);
-    const body = rows.length ? `<div class="table-wrap"><table><thead><tr><th>模型</th><th>调用次数</th><th>输入 token</th><th>输出 token</th><th>缓存 token</th><th>优惠后输入</th></tr></thead><tbody>${rows.map((row) => `<tr>
-      <td class="model" title="${esc(row.model)}">${esc(row.model)}</td><td>${num(row.requests)}</td><td>${tokenM(row.prompt_tokens)}</td><td>${tokenM(row.completion_tokens)}</td>
-      <td>${tokenM(row.cached_tokens)}</td><td>${tokenM(Math.max(0, Number(row.prompt_tokens) - Number(row.cached_tokens)))}</td>
-    </tr>`).join('')}</tbody></table></div>` : '<div class="empty usage-empty">当前时间范围内没有调用</div>';
-    return `<details class="usage-group" data-key-id="${esc(group.id)}" ${opened.has(group.id) ? 'open' : ''}>
-      <summary><div class="usage-key"><div><strong>${esc(group.label)}</strong>${group.last4 ? `<code>•••• ${esc(group.last4)}</code>` : ''}</div><span>${rows.length} 个模型</span></div>
-      <div class="usage-stat"><span>调用</span><strong>${num(requests)}</strong></div><div class="usage-stat"><span>总用量</span><strong>${tokenM(total)}</strong></div>
-      <div class="usage-stat"><span>缓存</span><strong>${tokenM(cached)}</strong></div><i class="usage-chevron"></i></summary>${body}</details>`;
-  }).join('') : '<div class="empty">还没有添加上游密钥</div>';
+  const percent = (value) => Math.min(100, Math.max(0, Number(value) * 100));
+  const tone = (value) => value >= 90 ? 'bad' : value >= 70 ? 'warn' : '';
+  const meter = (label, period) => {
+    const used = percent(period?.usage);
+    const calls = (period?.models || []).reduce((sum, item) => sum + Number(item.requestCount || 0), 0);
+    return `<div class="quota-meter"><div class="quota-meter-label"><span>${label}</span><strong>${used.toFixed(1)}%</strong></div>
+      <div class="quota-track"><i class="quota-fill ${tone(used)}" style="width:${used}%"></i></div>
+      <div class="quota-meter-note"><span>剩余 ${(100 - used).toFixed(1)}%</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
+  };
+  const modelList = (label, items = []) => `<section class="quota-model-list"><h4>${label}</h4>${items.length ? [...items]
+    .sort((a, b) => Number(b.requestCount) - Number(a.requestCount))
+    .map((item) => `<div class="quota-model-row"><code title="${esc(item.name)}">${esc(item.name)}</code><strong>${exactTokens(item.requestCount)} 次</strong></div>`).join('') : '<p>暂无模型调用</p>'}</section>`;
+  const keys = state.upstreamKeys || [];
+  const updated = keys.reduce((latest, key) => Math.max(latest, Number(key.quotaFetchedAt) || 0), 0);
+  $('#quota-meta').textContent = `${keys.length} 个 Ollama 密钥 · 周额度较低的账号优先分配${updated ? ` · 更新于 ${time(updated)}` : ''}`;
+  $('#quota-grid').innerHTML = keys.length ? keys.map((key) => {
+    const quota = key.quota;
+    const error = key.quotaError ? `<div class="quota-error">${esc(key.quotaError)}</div>` : '';
+    if (!quota) return `<article class="quota-card quota-unavailable"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div><div>${badge(key.status)}</div></div>
+      <div class="quota-wait"><strong>暂未读取到额度</strong><span>${esc(key.quotaError || '正在等待首次同步')}</span></div></article>`;
+    return `<article class="quota-card"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div>
+      <div><span class="badge ${key.tier === 'max' ? 'good' : ''}">${String(key.tier || 'max').toUpperCase()}</span>${badge(key.status)}</div></div>
+      <div class="quota-meters">${meter('当前 5 小时', quota.session)}${meter('本周额度', quota.weekly)}</div>${error}
+      <details class="quota-details"><summary>查看模型调用明细<span>按次数从高到低</span></summary><div class="quota-model-columns">${modelList('当前 5 小时', quota.session?.models)}${modelList('本周', quota.weekly?.models)}</div></details>
+      <footer>最近同步 ${time(key.quotaFetchedAt)} · 智能路由已启用</footer></article>`;
+  }).join('') : '<div class="empty">还没有添加 Ollama Cloud 密钥</div>';
 }
 
-async function load(page = currentPage) {
+async function load(page = currentPage, force = false) {
   if (loading.has(page)) return loading.get(page);
   const endpoint = {
     overview: `/admin/api/overview?hours=${$('#range').value}`,
     keys: '/admin/api/keys',
     models: '/admin/api/models',
-    usage: `/admin/api/usage?hours=${$('#range').value}`,
+    usage: `/admin/api/usage${force ? '?refresh=1' : ''}`,
     cache: '/admin/api/cache',
   }[page];
   const job = api(endpoint).then((data) => {
@@ -198,6 +197,8 @@ $('#nav').addEventListener('click', (event) => {
   document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
   $(`#page-${currentPage}`).classList.remove('hidden');
   $('#page-title').textContent = { overview: '运行总览', keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存账本' }[currentPage];
+  $('#range').classList.toggle('hidden', currentPage === 'usage');
+  $('#clear-usage').classList.toggle('hidden', currentPage === 'usage');
   load(currentPage).catch(() => {});
 });
 
@@ -302,8 +303,8 @@ $('#rp-cache-toggle').addEventListener('change', async (event) => {
   } finally { input.disabled = false; }
 });
 $('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀和 RP 分块吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load('cache'); } });
-$('#refresh').addEventListener('click', () => load(currentPage));
-$('#range').addEventListener('change', () => { if (currentPage === 'overview' || currentPage === 'usage') load(currentPage); });
+$('#refresh').addEventListener('click', () => load(currentPage, true));
+$('#range').addEventListener('change', () => { if (currentPage === 'overview') load(currentPage); });
 $('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });
 $('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });
 $('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
