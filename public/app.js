@@ -144,8 +144,6 @@ function renderUsage() {
     .sort((a, b) => Number(b.requestCount) - Number(a.requestCount))
     .map((item) => `<div class="quota-model-row"><code title="${esc(item.name)}">${esc(item.name)}</code><strong>${exactTokens(item.requestCount)} 次</strong></div>`).join('') : '<p>暂无模型调用</p>'}</section>`;
   const keys = state.upstreamKeys || [];
-  const updated = keys.reduce((latest, key) => Math.max(latest, Number(key.quotaFetchedAt) || 0), 0);
-  $('#quota-meta').textContent = `${keys.length} 个 Ollama 密钥 · 周额度较低的账号优先分配${updated ? ` · 更新于 ${time(updated)}` : ''}`;
   $('#quota-grid').innerHTML = keys.length ? keys.map((key) => {
     const quota = key.quota;
     const error = key.quotaError ? `<div class="quota-error">${esc(key.quotaError)}</div>` : '';

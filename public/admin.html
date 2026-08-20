@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cloud Proxy Console</title>
-  <link rel="stylesheet" href="/admin/style.css?v=13">
+  <link rel="stylesheet" href="/admin/style.css?v=14">
 </head>
 <body>
   <section class="login-shell" id="login-view">
@@ -78,10 +78,7 @@
         </section>
 
         <section class="page hidden" id="page-usage">
-          <div class="panel">
-            <div class="panel-head"><div><h3>Ollama Cloud 额度</h3><p id="quota-meta">按密钥读取官方 5 小时与每周额度</p></div></div>
-            <div class="quota-grid" id="quota-grid"></div>
-          </div>
+          <div class="quota-grid" id="quota-grid"></div>
         </section>
 
         <section class="page hidden" id="page-cache">
@@ -98,6 +95,6 @@
 
   <dialog id="token-dialog"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3>请立即保存</h3><p class="muted">关闭后无法再次查看完整密钥。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">我已保存</button></div></dialog>
   <div class="toast" id="toast"></div>
-  <script type="module" src="/admin/app.js?v=15"></script>
+  <script type="module" src="/admin/app.js?v=16"></script>
 </body>
 </html>

@@ -104,7 +104,7 @@ td.api-url { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .model-item:hover { border-color: #c9d4ce; box-shadow: 0 6px 18px rgba(23,32,28,.05); }
 .model-item strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 650 13px ui-monospace, monospace; }
 .model-item span { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
-.quota-grid { padding: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 14px; background: #f7f8f5; }
+.quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 14px; }
 .quota-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: 0 3px 14px rgba(23,32,28,.035); }
 .quota-card-head { padding: 16px 17px 13px; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .quota-card-head > div:first-child { min-width: 0; display: grid; gap: 6px; }
@@ -184,5 +184,4 @@ dialog::backdrop { background: rgba(25,31,28,.46); backdrop-filter: blur(3px); }
   .metrics, .cache-layout { grid-template-columns: 1fr; }
   .cache-info { grid-column: auto; }
   .inline-form { grid-template-columns: 1fr; }
-  .quota-grid { padding: 10px; }
 }

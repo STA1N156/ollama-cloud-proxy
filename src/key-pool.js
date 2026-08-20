@@ -31,7 +31,8 @@ export class KeyPool {
   }
 
   eligible(key, model, excluded, sourceUrl) {
-    if (!key.enabled || key.status === 'invalid' || excluded?.has(key.id) || key.cooldown_until > Date.now()) return false;
+    if (!key.enabled || key.status === 'invalid' || excluded?.has(key.id) || key.cooldown_until > Date.now()
+      || (key.base_url === this.store.defaultUpstreamBaseUrl && key.session_quota_blocked)) return false;
     if (sourceUrl) return key.base_url === sourceUrl;
     return !this.hasModels || this.modelsBySource.get(key.base_url)?.has(model);
   }
@@ -140,14 +141,25 @@ export class KeyPool {
   updateQuota(id, quota, error = '') {
     const key = this.keys.get(id);
     if (!key) return;
+    let routingChanged = false;
     key.quotaCheckedAt = Date.now();
     key.quotaError = error.slice(0, 300);
     if (quota) {
+      const sessionUsage = Number(quota.session?.usage);
+      if (Number.isFinite(sessionUsage)) {
+        const blocked = sessionUsage >= 0.95;
+        if (blocked !== key.session_quota_blocked) {
+          key.session_quota_blocked = blocked;
+          this.store.setUpstreamSessionQuotaBlocked(id, blocked);
+          routingChanged = true;
+        }
+      }
       key.quota = quota;
       key.quotaFetchedAt = key.quotaCheckedAt;
       key.quotaError = '';
     }
     this.schedules.clear();
+    if (routingChanged) this.wake();
   }
 
   snapshot() {

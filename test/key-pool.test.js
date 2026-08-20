@@ -81,6 +81,50 @@ test('优先使用周额度较低的 Ollama 密钥，额度接近后恢复等级
   assert.deepEqual([...assigned.values()], [5, 1]);
 });
 
+test('5小时已用额度达到95%后停用，成功刷新至95%以下才恢复', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const firstId = store.addUpstreamKey('A', 'key-a');
+  const secondId = store.addUpstreamKey('B', 'key-b');
+  const pool = new KeyPool(store);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  pool.updateQuota(firstId, { session: { usage: 0.949 }, weekly: { usage: 0.1 } });
+  pool.updateQuota(secondId, { session: { usage: 0.1 }, weekly: { usage: 0.8 } });
+  let lease = await pool.acquire('model-a');
+  assert.equal(lease.id, firstId);
+  lease.release();
+
+  pool.updateQuota(firstId, { session: { usage: 0.95 }, weekly: { usage: 0.1 } });
+  assert.equal(store.getUpstreamKey(firstId).session_quota_blocked, true);
+  lease = await pool.acquire('model-a');
+  assert.equal(lease.id, secondId);
+  lease.release();
+
+  pool.updateQuota(firstId, { session: { usage: 0.95 }, weekly: { usage: 0.1 } });
+  lease = await pool.acquire('model-a');
+  assert.equal(lease.id, secondId);
+  lease.release();
+
+  pool.updateQuota(firstId, { session: { usage: 0.949 }, weekly: { usage: 0.1 } });
+  assert.equal(store.getUpstreamKey(firstId).session_quota_blocked, false);
+  lease = await pool.acquire('model-a');
+  assert.equal(lease.id, firstId);
+  lease.release();
+
+  pool.updateQuota(firstId, { session: { usage: 0.95 }, weekly: { usage: 0.1 } });
+  const active = [];
+  for (let index = 0; index < 10; index += 1) active.push(await pool.acquire('model-a'));
+  assert.ok(active.every((item) => item.id === secondId));
+  const waiting = pool.acquire('model-a');
+  await new Promise((resolve) => setImmediate(resolve));
+  pool.updateQuota(firstId, { session: { usage: 0.949 }, weekly: { usage: 0.1 } });
+  lease = await waiting;
+  assert.equal(lease.id, firstId);
+  lease.release();
+  active.forEach((item) => item.release());
+});
+
 test('失效密钥自动退出轮询', async (t) => {
   const config = tempConfig();
   const store = new Store(config);

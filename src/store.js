@@ -48,6 +48,7 @@ export class Store {
         status TEXT NOT NULL DEFAULT 'new',
         last_error TEXT NOT NULL DEFAULT '',
         cooldown_until INTEGER NOT NULL DEFAULT 0,
+        session_quota_blocked INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -183,6 +184,9 @@ export class Store {
     if (!upstreamColumns.some((column) => column.name === 'tier')) {
       this.db.exec("ALTER TABLE upstream_keys ADD COLUMN tier TEXT NOT NULL DEFAULT 'max'");
     }
+    if (!upstreamColumns.some((column) => column.name === 'session_quota_blocked')) {
+      this.db.exec('ALTER TABLE upstream_keys ADD COLUMN session_quota_blocked INTEGER NOT NULL DEFAULT 0');
+    }
     this.db.exec("UPDATE upstream_keys SET tier='max' WHERE tier NOT IN ('max', 'pro') OR tier IS NULL");
     this.db.prepare("UPDATE upstream_keys SET base_url=? WHERE base_url='' OR base_url IS NULL").run(this.defaultUpstreamBaseUrl);
     const modelColumns = this.db.prepare('PRAGMA table_info(models)').all();
@@ -245,6 +249,7 @@ export class Store {
       id: Number(row.id),
       enabled: Boolean(row.enabled),
       use_proxy_cache: Boolean(row.use_proxy_cache),
+      session_quota_blocked: Boolean(row.session_quota_blocked),
       secret: reveal ? decrypt(row.secret, this.masterKey) : undefined,
       secret_hash: undefined,
     }));
@@ -252,7 +257,7 @@ export class Store {
 
   getUpstreamKey(id) {
     const row = this.db.prepare('SELECT * FROM upstream_keys WHERE id=?').get(id);
-    return row ? { ...row, id: Number(row.id), enabled: Boolean(row.enabled), use_proxy_cache: Boolean(row.use_proxy_cache), secret: decrypt(row.secret, this.masterKey), secret_hash: undefined } : null;
+    return row ? { ...row, id: Number(row.id), enabled: Boolean(row.enabled), use_proxy_cache: Boolean(row.use_proxy_cache), session_quota_blocked: Boolean(row.session_quota_blocked), secret: decrypt(row.secret, this.masterKey), secret_hash: undefined } : null;
   }
 
   setUpstreamEnabled(id, enabled) {
@@ -271,6 +276,10 @@ export class Store {
     if (row.base_url !== this.defaultUpstreamBaseUrl) throw new Error('外部 API 不使用 Ollama 密钥等级');
     this.db.prepare('UPDATE upstream_keys SET tier=?, updated_at=? WHERE id=?')
       .run(upstreamTier(tier), now(), id);
+  }
+
+  setUpstreamSessionQuotaBlocked(id, blocked) {
+    this.db.prepare('UPDATE upstream_keys SET session_quota_blocked=? WHERE id=?').run(blocked ? 1 : 0, id);
   }
 
   deleteUpstreamKey(id) {
