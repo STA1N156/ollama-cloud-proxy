@@ -137,7 +137,7 @@ function renderUsage() {
     const used = percent(period?.usage);
     const calls = (period?.models || []).reduce((sum, item) => sum + Number(item.requestCount || 0), 0);
     return `<div class="quota-meter"><div class="quota-meter-label"><span>${label}</span><strong>${used.toFixed(1)}%</strong></div>
-      <div class="quota-track"><i class="quota-fill ${tone(used)}" style="width:${used}%"></i></div>
+      <progress class="quota-progress ${tone(used)}" max="100" value="${used}" aria-label="${label}已用 ${used.toFixed(1)}%"></progress>
       <div class="quota-meter-note"><span>剩余 ${(100 - used).toFixed(1)}%</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
   };
   const modelList = (label, items = []) => `<section class="quota-model-list"><h4>${label}</h4>${items.length ? [...items]
@@ -154,8 +154,7 @@ function renderUsage() {
     return `<article class="quota-card"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div>
       <div><span class="badge ${key.tier === 'max' ? 'good' : ''}">${String(key.tier || 'max').toUpperCase()}</span>${badge(key.status)}</div></div>
       <div class="quota-meters">${meter('当前 5 小时', quota.session)}${meter('本周额度', quota.weekly)}</div>${error}
-      <details class="quota-details"><summary>查看模型调用明细<span>按次数从高到低</span></summary><div class="quota-model-columns">${modelList('当前 5 小时', quota.session?.models)}${modelList('本周', quota.weekly?.models)}</div></details>
-      <footer>最近同步 ${time(key.quotaFetchedAt)} · 智能路由已启用</footer></article>`;
+      <details class="quota-details"><summary>查看本周模型调用明细<span>按次数从高到低</span></summary>${modelList('本周', quota.weekly?.models)}</details></article>`;
   }).join('') : '<div class="empty">还没有添加 Ollama Cloud 密钥</div>';
 }
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cloud Proxy Console</title>
-  <link rel="stylesheet" href="/admin/style.css?v=11">
+  <link rel="stylesheet" href="/admin/style.css?v=13">
 </head>
 <body>
   <section class="login-shell" id="login-view">
@@ -59,7 +59,7 @@
           <div class="split">
             <div class="panel">
               <div class="panel-head"><div><h3>上游 API 通道</h3><p>Ollama 密钥可设置 MAX / PRO 分配权重</p></div></div>
-              <form class="inline-form upstream-form" id="upstream-form"><input name="label" placeholder="通道名称，例如备用 API" required><input name="baseUrl" type="url" value="https://ollama.com/v1" placeholder="https://example.com/v1" required><input name="key" type="password" placeholder="API Key" required><button class="primary">导入通道</button></form>
+              <form class="inline-form upstream-form" id="upstream-form"><input name="label" placeholder="通道名称，例如备用 API" required><input name="baseUrl" type="url" value="https://ollama.com/v1" placeholder="https://example.com/v1" required><input name="key" type="password" placeholder="API Key" required><select name="tier" aria-label="Ollama 密钥等级"><option value="max">MAX · 10 并发</option><option value="pro">PRO · 3 并发</option></select><button class="primary">导入通道</button></form>
               <div class="table-wrap"><table><thead><tr><th>名称</th><th>API 地址</th><th>密钥</th><th>等级</th><th>代理缓存</th><th>状态</th><th>并发</th><th></th></tr></thead><tbody id="upstream-body"></tbody></table></div>
             </div>
             <div class="panel">
@@ -98,6 +98,6 @@
 
   <dialog id="token-dialog"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3>请立即保存</h3><p class="muted">关闭后无法再次查看完整密钥。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">我已保存</button></div></dialog>
   <div class="toast" id="toast"></div>
-  <script type="module" src="/admin/app.js?v=14"></script>
+  <script type="module" src="/admin/app.js?v=15"></script>
 </body>
 </html>
