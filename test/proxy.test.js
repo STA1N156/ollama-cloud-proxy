@@ -398,6 +398,40 @@ test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并�
   assert.equal(hitResponse.headers.get('x-proxy-cache-source'), 'proxy-simulated');
 });
 
+test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
+  const calls = [];
+  const upstreamServer = http.createServer((req, res) => {
+    calls.push(req.headers.authorization);
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
+    res.end('{"error":{"message":"rate limited"}}');
+  });
+  const upstreamUrl = await listen(upstreamServer);
+  const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1`, retryCount: 10 });
+  const store = new Store(config);
+  for (let index = 1; index <= 11; index += 1) store.addUpstreamKey(`Key ${index}`, `key-${index}`);
+  store.addClientKey('client', 'client-key');
+  const usage = new UsageLedger(store);
+  const pool = new KeyPool(store, 32, (event) => usage.reportHealth(event));
+  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const proxy = new ProxyHandler(config, store, pool, ledger, usage);
+  const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
+  const proxyUrl = await listen(proxyServer);
+  t.after(async () => {
+    await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
+    await Promise.all([ledger.close(), usage.close()]); store.close(); config.cleanup();
+  });
+
+  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer client-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'model-a', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 502);
+  assert.equal(calls.length, 10);
+  assert.equal(new Set(calls).size, 10);
+  assert.equal(pool.snapshot().filter((key) => key.status === 'cooldown').length, 10);
+});
+
 test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {
   const counts = new Map();
   const upstreamServer = http.createServer(async (req, res) => {

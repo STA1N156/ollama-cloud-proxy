@@ -97,6 +97,13 @@ test('旧上游和模型数据自动迁移到默认 API 地址', (t) => {
   const store = new Store(config);
   t.after(() => { store.close(); config.cleanup(); });
   assert.equal(store.listModels()[0].source_url, 'https://default.example/v1');
+  assert.ok(store.db.prepare('PRAGMA table_info(upstream_keys)').all().some((column) => column.name === 'tier'));
+  const officialId = store.addUpstreamKey('Ollama PRO', 'official-secret', config.upstreamBaseUrl, false, 'pro');
+  assert.equal(store.getUpstreamKey(officialId).tier, 'pro');
+  store.addUpstreamKey('环境变量重新导入', 'official-secret', config.upstreamBaseUrl);
+  assert.equal(store.getUpstreamKey(officialId).tier, 'pro');
+  store.setUpstreamTier(officialId, 'max');
+  assert.equal(store.getUpstreamKey(officialId).tier, 'max');
   const id = store.addUpstreamKey('External', 'external-secret', 'https://external.example/v1/');
   const key = store.getUpstreamKey(id);
   assert.equal(key.base_url, 'https://external.example/v1');
@@ -104,6 +111,9 @@ test('旧上游和模型数据自动迁移到默认 API 地址', (t) => {
   assert.equal(key.use_proxy_cache, false);
   store.setUpstreamProxyCache(id, true);
   assert.equal(store.getUpstreamKey(id).use_proxy_cache, true);
+  assert.equal(store.getUpstreamKey(id).tier, 'max');
+  assert.throws(() => store.setUpstreamTier(id, 'pro'), /外部 API/);
+  assert.throws(() => store.setUpstreamTier(officialId, 'vip'), /MAX 或 PRO/);
 });
 
 test('下游鉴权关闭数据库后仍从内存读取', () => {

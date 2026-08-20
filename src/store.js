@@ -4,6 +4,11 @@ import { decrypt, encrypt, loadOrCreateMasterKey, sha256 } from './crypto.js';
 
 const now = () => Date.now();
 const outputTps = (value) => Math.min(1000, Math.max(0, Math.floor(Number(value) || 0)));
+const upstreamTier = (value) => {
+  const tier = String(value || 'max').trim().toLowerCase();
+  if (!['max', 'pro'].includes(tier)) throw new Error('Ollama 密钥等级只能是 MAX 或 PRO');
+  return tier;
+};
 const clientOrigin = (value) => {
   const origin = String(value || '').trim();
   if (!origin) return '';
@@ -39,6 +44,7 @@ export class Store {
         last4 TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         use_proxy_cache INTEGER NOT NULL DEFAULT 0,
+        tier TEXT NOT NULL DEFAULT 'max',
         status TEXT NOT NULL DEFAULT 'new',
         last_error TEXT NOT NULL DEFAULT '',
         cooldown_until INTEGER NOT NULL DEFAULT 0,
@@ -174,6 +180,10 @@ export class Store {
     if (!upstreamColumns.some((column) => column.name === 'use_proxy_cache')) {
       this.db.exec('ALTER TABLE upstream_keys ADD COLUMN use_proxy_cache INTEGER NOT NULL DEFAULT 0');
     }
+    if (!upstreamColumns.some((column) => column.name === 'tier')) {
+      this.db.exec("ALTER TABLE upstream_keys ADD COLUMN tier TEXT NOT NULL DEFAULT 'max'");
+    }
+    this.db.exec("UPDATE upstream_keys SET tier='max' WHERE tier NOT IN ('max', 'pro') OR tier IS NULL");
     this.db.prepare("UPDATE upstream_keys SET base_url=? WHERE base_url='' OR base_url IS NULL").run(this.defaultUpstreamBaseUrl);
     const modelColumns = this.db.prepare('PRAGMA table_info(models)').all();
     if (!modelColumns.some((column) => column.name === 'source_url')) {
@@ -206,20 +216,23 @@ export class Store {
     this.db.close();
   }
 
-  addUpstreamKey(label, secret, baseUrl = this.defaultUpstreamBaseUrl, useProxyCache = false) {
+  addUpstreamKey(label, secret, baseUrl = this.defaultUpstreamBaseUrl, useProxyCache = false, tier = null) {
     const value = secret.trim();
     if (!value) throw new Error('密钥不能为空');
     const source = normalizeBaseUrl(baseUrl, this.defaultUpstreamBaseUrl);
+    const level = source === this.defaultUpstreamBaseUrl && tier != null ? upstreamTier(tier) : 'max';
+    const replaceTier = tier != null || source !== this.defaultUpstreamBaseUrl;
     const hash = sha256(value);
     const previous = this.db.prepare('SELECT base_url FROM upstream_keys WHERE secret_hash=?').get(hash);
     const stamp = now();
     const result = this.db.prepare(`
-      INSERT INTO upstream_keys(label, base_url, secret, secret_hash, last4, use_proxy_cache, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO upstream_keys(label, base_url, secret, secret_hash, last4, use_proxy_cache, tier, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(secret_hash) DO UPDATE SET label=excluded.label, base_url=excluded.base_url,
-        use_proxy_cache=excluded.use_proxy_cache, enabled=1, status='new', last_error='', cooldown_until=0, updated_at=excluded.updated_at
+        use_proxy_cache=excluded.use_proxy_cache, tier=CASE WHEN ? THEN excluded.tier ELSE upstream_keys.tier END,
+        enabled=1, status='new', last_error='', cooldown_until=0, updated_at=excluded.updated_at
       RETURNING id
-    `).get(label.trim() || `Key ${value.slice(-4)}`, source, encrypt(value, this.masterKey), hash, value.slice(-4), useProxyCache ? 1 : 0, stamp, stamp);
+    `).get(label.trim() || `Key ${value.slice(-4)}`, source, encrypt(value, this.masterKey), hash, value.slice(-4), useProxyCache ? 1 : 0, level, stamp, stamp, replaceTier ? 1 : 0);
     if (previous && previous.base_url !== source && !this.db.prepare('SELECT 1 FROM upstream_keys WHERE base_url=? LIMIT 1').get(previous.base_url)) {
       this.db.prepare('DELETE FROM models WHERE source_url=?').run(previous.base_url);
     }
@@ -250,6 +263,14 @@ export class Store {
   setUpstreamProxyCache(id, enabled) {
     this.db.prepare('UPDATE upstream_keys SET use_proxy_cache=?, updated_at=? WHERE id=?')
       .run(enabled ? 1 : 0, now(), id);
+  }
+
+  setUpstreamTier(id, tier) {
+    const row = this.db.prepare('SELECT base_url FROM upstream_keys WHERE id=?').get(id);
+    if (!row) throw new Error('上游密钥不存在');
+    if (row.base_url !== this.defaultUpstreamBaseUrl) throw new Error('外部 API 不使用 Ollama 密钥等级');
+    this.db.prepare('UPDATE upstream_keys SET tier=?, updated_at=? WHERE id=?')
+      .run(upstreamTier(tier), now(), id);
   }
 
   deleteUpstreamKey(id) {

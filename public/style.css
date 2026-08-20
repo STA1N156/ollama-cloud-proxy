@@ -91,6 +91,7 @@ td.api-url { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .origin-control { display: flex; align-items: center; gap: 6px; }
 .origin-control select { min-width: 150px; min-height: 32px; }
 .origin-control button { min-height: 30px; padding: 0 9px; border: 1px solid var(--line); background: white; font-size: 11px; }
+.tier-select { min-width: 94px; min-height: 32px; }
 .model-groups { display: grid; }
 .model-group + .model-group { border-top: 1px solid var(--line); }
 .model-group-head { padding: 16px 20px 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }

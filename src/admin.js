@@ -77,15 +77,31 @@ export class AdminHandler {
   async testKey(id) {
     const key = this.store.getUpstreamKey(id);
     if (!key) throw Object.assign(new Error('密钥不存在'), { status: 404 });
-    const response = await fetch(`${key.base_url}/models`, {
-      headers: { authorization: `Bearer ${key.secret}`, accept: 'application/json' },
+    const ollama = key.base_url === this.store.defaultUpstreamBaseUrl;
+    const response = await fetch(`${key.base_url}${ollama ? '/chat/completions' : '/models'}`, {
+      method: ollama ? 'POST' : 'GET',
+      headers: {
+        authorization: `Bearer ${key.secret}`,
+        accept: 'application/json',
+        ...(ollama ? { 'content-type': 'application/json' } : {}),
+      },
+      body: ollama ? JSON.stringify({
+        model: 'deepseek-v4-flash:0731',
+        messages: [{ role: 'user', content: '请只回复 OK' }],
+        stream: false,
+        max_tokens: 8,
+      }) : undefined,
       signal: AbortSignal.timeout(Math.min(this.config.responseHeaderTimeoutMs, 30_000)),
     });
     if (!response.ok) {
-      this.pool.report(id, response.status === 401 || response.status === 403 ? 'invalid' : 'degraded', `HTTP ${response.status}`);
-      throw Object.assign(new Error(`测试失败：HTTP ${response.status}`), { status: 400 });
+      const detail = (await response.text()).slice(0, 300);
+      this.pool.report(id, response.status === 401 || response.status === 403 ? 'invalid' : 'degraded', `HTTP ${response.status}: ${detail}`);
+      throw Object.assign(new Error(`测试失败：HTTP ${response.status}${detail ? `，${detail}` : ''}`), { status: 400 });
     }
-    await response.body?.cancel();
+    if (ollama) {
+      const result = await response.json();
+      if (!Array.isArray(result.choices) || !result.choices.length) throw Object.assign(new Error('测试失败：上游没有返回对话结果'), { status: 400 });
+    } else await response.body?.cancel();
     this.pool.report(id, 'healthy');
     this.modelSync.sync().catch(() => {});
     return { ok: true };
@@ -140,7 +156,7 @@ export class AdminHandler {
     }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);
-      const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''), Boolean(body.useProxyCache));
+      const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''), Boolean(body.useProxyCache), body.tier);
       this.pool.reload();
       this.modelSync.sync().catch(() => {});
       return send(res, 201, { id });
@@ -153,6 +169,7 @@ export class AdminHandler {
         const body = await json(req);
         if (body.enabled != null) this.store.setUpstreamEnabled(id, Boolean(body.enabled));
         if (body.useProxyCache != null) this.store.setUpstreamProxyCache(id, Boolean(body.useProxyCache));
+        if (body.tier != null) this.store.setUpstreamTier(id, body.tier);
         this.pool.reload();
         return send(res, 200, { ok: true });
       }

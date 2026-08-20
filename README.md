@@ -38,6 +38,8 @@ npm start
 
 新版本会加密保存新生成的下游访问密钥，管理员可以在密钥页再次复制。旧版本只保存了不可逆哈希，升级后原有密钥仍可使用，但需要重新生成才能在后台复制。
 
+Ollama Cloud 密钥默认是 `MAX`（权重5），可在密钥表中改为 `PRO`（权重1）。轮询按模型分别计算，两个账号都可用时，一个 MAX 和一个 PRO 每120次请求约分配100次与20次；账号冷却、暂停或达到并发上限时会临时绕开。外部 OpenAI API 不使用此等级。
+
 示例：
 
 ```bash
@@ -105,7 +107,7 @@ Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses 
 | `CACHE_TTL` | `1h` | 缓存有效期 |
 | `MAX_INFLIGHT_PER_KEY` | `32` | 单个 Ollama Cloud 密钥最大同时请求数；外部 API 不限 |
 | `MODEL_SYNC_INTERVAL` | `10m` | 模型同步间隔 |
-| `UPSTREAM_RETRIES` | `3` | 发送响应前最多尝试的不同密钥数 |
+| `UPSTREAM_RETRIES` | `10` | 发送响应前最多尝试的不同密钥数，最高10 |
 | `UPSTREAM_BASE_URL` | `https://ollama.com/v1` | OpenAI 兼容上游地址 |
 | `MODEL_SYNC_URL` | `https://ollama.com/api/tags` | 模型列表地址 |
 | `MAX_REQUEST_BYTES` | `33554432` | 最大请求体字节数 |

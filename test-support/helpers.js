@@ -16,7 +16,7 @@ export function tempConfig(overrides = {}) {
     maxInflightPerKey: 4,
     maxRequestBytes: 1024 * 1024,
     responseHeaderTimeoutMs: 5000,
-    retryCount: 3,
+    retryCount: 10,
     ...overrides,
     cleanup() { fs.rmSync(dataDir, { recursive: true, force: true }); },
   };

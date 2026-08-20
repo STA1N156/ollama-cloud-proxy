@@ -21,6 +21,38 @@ test('同一模型在健康密钥间公平轮询', async (t) => {
   assert.deepEqual(ids, [1, 2, 1, 2]);
 });
 
+test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const maxId = store.addUpstreamKey('MAX', 'key-max');
+  const proId = store.addUpstreamKey('PRO', 'key-pro');
+  store.setUpstreamTier(proId, 'pro');
+  const pool = new KeyPool(store, 32);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  const assigned = new Map([[maxId, 0], [proId, 0]]);
+  for (let index = 0; index < 120; index += 1) {
+    const lease = await pool.acquire('model-a');
+    assigned.set(lease.id, assigned.get(lease.id) + 1);
+    lease.release();
+  }
+  assert.deepEqual([...assigned.values()], [100, 20]);
+
+  const modelA = [];
+  const modelB = [];
+  pool.reload();
+  for (let index = 0; index < 4; index += 1) {
+    const lease = await pool.acquire('model-a');
+    modelA.push(lease.id);
+    lease.release();
+  }
+  const lease = await pool.acquire('model-b');
+  modelB.push(lease.id);
+  lease.release();
+  assert.deepEqual(modelA, [maxId, maxId, maxId, proId]);
+  assert.deepEqual(modelB, [maxId]);
+});
+
 test('失效密钥自动退出轮询', async (t) => {
   const config = tempConfig();
   const store = new Store(config);

@@ -41,7 +41,7 @@ export const config = {
   maxInflightPerKey: integer('MAX_INFLIGHT_PER_KEY', 32),
   maxRequestBytes: integer('MAX_REQUEST_BYTES', 32 * 1024 * 1024),
   responseHeaderTimeoutMs: duration('RESPONSE_HEADER_TIMEOUT', 600_000),
-  retryCount: integer('UPSTREAM_RETRIES', 3),
+  retryCount: Math.min(10, integer('UPSTREAM_RETRIES', 10)),
   upstreamKeys: list('OLLAMA_API_KEYS'),
   clientKeys: list('PROXY_API_KEYS'),
 };
