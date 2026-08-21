@@ -13,7 +13,7 @@ const clientOrigin = (value) => {
   const origin = String(value || '').trim();
   if (!origin) return '';
   if (!['https://sta1n156.github.io', 'codex-router'].includes(origin)) throw new Error('不支持的白名单');
-  return origin;
+  return 'https://sta1n156.github.io';
 };
 export const normalizeBaseUrl = (value, fallback = 'https://ollama.com/v1') => {
   const url = new URL(String(value || fallback).trim());
@@ -174,6 +174,7 @@ export class Store {
     if (!clientColumns.some((column) => column.name === 'allowed_origin')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN allowed_origin TEXT NOT NULL DEFAULT ''");
     }
+    this.db.exec("UPDATE client_keys SET allowed_origin='https://sta1n156.github.io' WHERE allowed_origin='codex-router'");
     const upstreamColumns = this.db.prepare('PRAGMA table_info(upstream_keys)').all();
     if (!upstreamColumns.some((column) => column.name === 'base_url')) {
       this.db.exec("ALTER TABLE upstream_keys ADD COLUMN base_url TEXT NOT NULL DEFAULT ''");

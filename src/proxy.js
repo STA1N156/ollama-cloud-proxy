@@ -282,13 +282,12 @@ export class ProxyHandler {
     } catch (error) {
       return jsonError(res, error.status || 401, error.message, 'authentication_error');
     }
-    if (clientAccess.allowedOrigin === 'codex-router' && !codexRouterAgent.test(req.headers['user-agent'] || '')) {
-      return jsonError(res, 403, '公益模型仅限在Codex-Router中使用，您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方工具使用', 'permission_error');
-    }
-    if (clientAccess.allowedOrigin && clientAccess.allowedOrigin !== 'codex-router' && !rphOrigins.has(req.headers.origin)) {
+    const allowedSite = rphOrigins.has(req.headers.origin);
+    const allowedRouter = codexRouterAgent.test(req.headers['user-agent'] || '');
+    if (clientAccess.allowedOrigin && !allowedSite && !allowedRouter) {
       return jsonError(res, 403, '公益模型仅限在RP-Hub官方源站使用，如您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方源站使用', 'permission_error');
     }
-    const originRestricted = clientAccess.allowedOrigin && clientAccess.allowedOrigin !== 'codex-router';
+    const originRestricted = clientAccess.allowedOrigin && allowedSite;
     res.setHeader('access-control-allow-origin', originRestricted ? req.headers.origin : '*');
     if (originRestricted) res.setHeader('vary', 'Origin');
     const clientKeyId = clientAccess.id;

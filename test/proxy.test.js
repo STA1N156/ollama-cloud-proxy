@@ -228,6 +228,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   assert.equal(blockedSite.status, 403);
   assert.equal((await blockedSite.json()).error.message, '公益模型仅限在RP-Hub官方源站使用，如您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方源站使用');
   assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...siteHeaders, origin: 'https://example.com' } })).status, 403);
+  assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...siteHeaders, 'user-agent': 'codex-router/1.0.0' } })).status, 200);
 
   const routerHeaders = { authorization: 'Bearer router-key' };
   for (const agent of ['codex-router/1.0.0', 'codex-router/xxxxx']) {
@@ -235,9 +236,10 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('access-control-allow-origin'), '*');
   }
+  assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...routerHeaders, origin: 'https://sta1n156.github.io' } })).status, 200);
   const blockedRouter = await fetch(`${proxyUrl}/v1/models`, { headers: routerHeaders });
   assert.equal(blockedRouter.status, 403);
-  assert.equal((await blockedRouter.json()).error.message, '公益模型仅限在Codex-Router中使用，您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方工具使用');
+  assert.equal((await blockedRouter.json()).error.message, '公益模型仅限在RP-Hub官方源站使用，如您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方源站使用');
   assert.equal((await fetch(`${proxyUrl}/v1/models`, { headers: { ...routerHeaders, 'user-agent': 'codex-router/' } })).status, 403);
 
   const base = {

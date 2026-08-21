@@ -5,6 +5,25 @@ import { Store } from '../src/store.js';
 import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
 
+test('旧白名单2自动合并到统一白名单', (t) => {
+  const config = tempConfig();
+  const legacy = new DatabaseSync(config.databasePath);
+  legacy.exec(`
+    CREATE TABLE client_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+      token_secret TEXT NOT NULL DEFAULT '', last4 TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+      output_tps INTEGER NOT NULL DEFAULT 0, allowed_origin TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL
+    );
+    INSERT INTO client_keys(label, token_hash, last4, allowed_origin, created_at)
+    VALUES ('旧白名单2', 'legacy-router', '0000', 'codex-router', 1);
+  `);
+  legacy.close();
+
+  const store = new Store(config);
+  t.after(() => { store.close(); config.cleanup(); });
+  assert.equal(store.listClientKeys()[0].allowed_origin, 'https://sta1n156.github.io');
+});
+
 test('旧数据库自动迁移，新下游密钥可复制并统计累计用量', async (t) => {
   const config = tempConfig();
   const legacy = new DatabaseSync(config.databasePath);
@@ -38,7 +57,7 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   assert.equal(store.getClientAccess('ocp_copy_me').outputTps, 12);
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
   store.setClientAllowedOrigin(id, 'codex-router');
-  assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'codex-router');
+  assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
   assert.throws(() => store.setClientAllowedOrigin(id, 'https://example.com'), /不支持的白名单/);
   usage.record({
     upstreamKeyId: upstreamId,
