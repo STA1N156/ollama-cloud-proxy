@@ -262,7 +262,8 @@ parentPort.on('message', (message) => {
     if (message.type === 'resolve') {
       const fingerprint = buildFingerprint(message.endpoint, message.request, masterKey);
       respond({ fingerprint, hit: lookup(fingerprint, message.model) });
-    } else if (message.type === 'lookup') respond(lookup(message.fingerprint, message.model));
+    } else if (message.type === 'fingerprint') respond(buildFingerprint(message.endpoint, message.request, masterKey));
+    else if (message.type === 'lookup') respond(lookup(message.fingerprint, message.model));
     else if (message.type === 'register') register(message.fingerprint, message.model, message.promptTokens);
     else if (message.type === 'flush') { while (queue.length) flush(); respond(true); }
     else if (message.type === 'stats') respond(stats());

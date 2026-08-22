@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { CacheLedger } from '../src/cache.js';
 import { KeyPool } from '../src/key-pool.js';
 import { ModelSync } from '../src/model-sync.js';
-import { injectUsage, ProxyHandler, routingSessionKey } from '../src/proxy.js';
+import { contentRoutingIdentity, injectUsage, ProxyHandler, routingSessionKey } from '../src/proxy.js';
 import { Store } from '../src/store.js';
 import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
@@ -24,6 +24,10 @@ test('粘性会话标识优先读取请求头并隔离下游密钥和模型', ()
   assert.notEqual(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-b'));
   assert.notEqual(fromUser, routingSessionKey({ 'x-proxy-session': 'header-session' }, { user: 'roleplay-1' }, 1, 'model-a'));
   assert.equal(routingSessionKey({}, {}, 1, 'model-a'), '');
+  const content = contentRoutingIdentity({ entries: [{ hash: 'first' }, { hash: 'second' }] }, 1, 'model-a');
+  assert.deepEqual(content.lookupKeys, ['1\0model-a\0second', '1\0model-a\0first']);
+  assert.equal(content.rememberKey, content.lookupKeys[0]);
+  assert.notEqual(content.lookupKeys[0], contentRoutingIdentity({ entries: [{ hash: 'second' }] }, 2, 'model-a').lookupKeys[0]);
 });
 
 test('按 New API 标准回报缓存 token 和思考过程', () => {

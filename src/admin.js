@@ -242,6 +242,7 @@ export class AdminHandler {
     }
     if (url.pathname === '/admin/api/cache' && req.method === 'DELETE') {
       await this.ledger.clear();
+      this.pool.clearSticky();
       return send(res, 200, { ok: true });
     }
     if (url.pathname === '/admin/api/cache/rp' && req.method === 'PATCH') {

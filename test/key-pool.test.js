@@ -79,6 +79,29 @@ test('粘性路由固定已有会话，新会话补偿额度差且并发溢出�
   assert.deepEqual(pool.setStickyEnabled(false), { stickyEnabled: false, stickyEntries: 0, stickyTtlMs: 3_600_000 });
 });
 
+test('追加和分支对话通过最长内容前缀继承粘性绑定', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  store.addUpstreamKey('A', 'key-a');
+  store.addUpstreamKey('B', 'key-b');
+  store.setStickyRoutingEnabled(true);
+  const pool = new KeyPool(store);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  let lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['turn-1'], rememberKey: 'turn-1' });
+  assert.equal(lease.id, 1);
+  lease.release();
+  lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['turn-2', 'turn-1'], rememberKey: 'turn-2' });
+  assert.equal(lease.id, 1);
+  lease.release();
+  lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['branch-2', 'turn-1'], rememberKey: 'branch-2' });
+  assert.equal(lease.id, 1);
+  lease.release();
+  lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['unrelated'], rememberKey: 'unrelated' });
+  assert.equal(lease.id, 2);
+  lease.release();
+});
+
 test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {
   const config = tempConfig();
   const store = new Store(config);

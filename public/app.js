@@ -82,8 +82,8 @@ function renderCache() {
   $('#sticky-routing-toggle').checked = Boolean(state.cache.stickyEnabled);
   $('#sticky-routing-status').textContent = state.cache.stickyEnabled ? '开启' : '关闭';
   $('#sticky-routing-note').textContent = state.cache.stickyEnabled
-    ? `${num(state.cache.stickyEntries)} 个活跃会话 · 1 小时无请求过期`
-    : '同一会话优先沿用上游密钥';
+    ? `${num(state.cache.stickyEntries)} 个对话锚点 · 1 小时无请求过期`
+    : '按完整对话前缀识别同一会话';
 }
 
 function renderModelMeta() {

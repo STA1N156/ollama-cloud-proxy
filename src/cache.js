@@ -176,6 +176,10 @@ export class CacheLedger {
     return this.request('resolve', { endpoint, request, model });
   }
 
+  fingerprint(endpoint, request, timeoutMs = 50) {
+    return this.request('fingerprint', { endpoint, request }, timeoutMs);
+  }
+
   lookup(fingerprint, model) {
     return this.request('lookup', { fingerprint, model });
   }

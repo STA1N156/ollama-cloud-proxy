@@ -18,8 +18,15 @@ const bearer = (header = '') => header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ||
 
 export function routingSessionKey(headers, request, clientKeyId, model) {
   const header = Array.isArray(headers['x-proxy-session']) ? headers['x-proxy-session'][0] : headers['x-proxy-session'];
-  const session = String(header || request?.user || '').trim();
+  const session = String(header || request?.conversation_id || request?.session_id
+    || request?.metadata?.conversation_id || request?.metadata?.session_id || request?.user || '').trim();
   return session ? sha256(`${clientKeyId ?? 'anonymous'}\0${model}\0${session}`) : '';
+}
+
+export function contentRoutingIdentity(fingerprint, clientKeyId, model) {
+  const prefix = `${clientKeyId ?? 'anonymous'}\0${model}\0`;
+  const lookupKeys = (fingerprint?.entries || []).map((entry) => `${prefix}${entry.hash}`).reverse();
+  return lookupKeys.length ? { lookupKeys, rememberKey: lookupKeys[0] } : null;
 }
 
 const wait = (ms, signal) => new Promise((resolve, reject) => {
@@ -349,13 +356,18 @@ export class ProxyHandler {
 
     const model = typeof request.model === 'string' ? request.model : '';
     if (!model) return jsonError(res, 400, this.store.errorMessage('model_required'), 'invalid_request_error');
-    const stickyKey = this.pool.stickyEnabled ? routingSessionKey(req.headers, request, clientKeyId, model) : '';
     const stream = request.stream === true;
     const clientWantsUsage = includeUsage(request);
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
     let upstreamBody = forceStreamUsage ? forceUsageBody(raw, request, url.pathname) : raw;
     const supportsLocalCache = ['/v1/chat/completions', '/v1/responses', '/v1/completions'].includes(url.pathname);
     let fingerprintRequest = supportsLocalCache ? cacheRequest(request) : null;
+    const explicitStickyKey = this.pool.stickyEnabled ? routingSessionKey(req.headers, request, clientKeyId, model) : '';
+    let contentFingerprint;
+    if (this.pool.stickyEnabled && !explicitStickyKey && fingerprintRequest) {
+      contentFingerprint = await this.ledger.fingerprint(url.pathname, fingerprintRequest).catch(() => null);
+    }
+    const stickyIdentity = explicitStickyKey || contentRoutingIdentity(contentFingerprint, clientKeyId, model);
     const excluded = new Set();
     const controller = new AbortController();
     req.once('aborted', () => controller.abort(new Error('客户端已断开')));
@@ -375,7 +387,9 @@ export class ProxyHandler {
       hit: { matched: false, exact: false, weight: 0, observedTokens: 0 },
     };
     const startCache = () => {
-      if (!cacheJob) cacheJob = this.ledger.resolve(url.pathname, fingerprintRequest, model).then(
+      if (!cacheJob) cacheJob = (contentFingerprint
+        ? this.ledger.lookup(contentFingerprint, model).then((hit) => ({ fingerprint: contentFingerprint, hit }))
+        : this.ledger.resolve(url.pathname, fingerprintRequest, model)).then(
         (value) => { cacheState.value = value; return value; },
         (error) => { cacheState.value = cacheFallback; console.error('cache lookup failed:', error.message); return cacheFallback; },
       );
@@ -384,11 +398,11 @@ export class ProxyHandler {
     while (ordinaryFailures < this.config.retryCount) {
       try {
         try {
-          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyKey);
+          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyIdentity);
         } catch (error) {
           if (controller.signal.aborted || !excluded.size) throw error;
           excluded.clear();
-          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyKey);
+          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyIdentity);
         }
         excluded.add(lease.id);
         const target = `${lease.baseUrl}${url.pathname.slice(3)}${url.search}`;

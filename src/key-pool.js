@@ -33,6 +33,13 @@ const updateQuotaHistory = (history, usage, at) => {
 
 const STICKY_TTL_MS = 60 * 60_000;
 const MAX_STICKY_ROUTES = 50_000;
+const stickyRoute = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string') return { lookupKeys: [value], rememberKey: value };
+  const lookupKeys = Array.isArray(value.lookupKeys) ? value.lookupKeys.filter(Boolean) : [];
+  const rememberKey = value.rememberKey || lookupKeys[0];
+  return rememberKey ? { lookupKeys, rememberKey } : null;
+};
 
 export class KeyPool {
   constructor(store, reportHealth) {
@@ -75,22 +82,25 @@ export class KeyPool {
     return !this.hasModels || this.modelsBySource.get(key.base_url)?.has(model);
   }
 
-  tryAcquire(model, excluded, sourceUrl, stickyKey) {
+  tryAcquire(model, excluded, sourceUrl, stickyValue) {
     const keys = this.sortedKeys;
     const eligible = keys.filter((key) => this.eligible(key, model, excluded, sourceUrl));
     if (!eligible.length) return null;
-    const route = this.stickyEnabled && stickyKey ? this.stickyRoutes.get(stickyKey) : null;
+    const identity = this.stickyEnabled ? stickyRoute(stickyValue) : null;
+    const matchedKey = identity?.lookupKeys.find((key) => this.stickyRoutes.has(key));
+    const route = matchedKey ? this.stickyRoutes.get(matchedKey) : null;
     const bound = route && route.expiresAt > Date.now()
       ? this.keys.get(route.keyId)
       : null;
     const sticky = bound && bound.stickyGeneration === route.generation && this.eligible(bound, model, excluded, sourceUrl)
       ? bound
       : null;
-    if (route && !sticky) this.stickyRoutes.delete(stickyKey);
+    if (matchedKey && !sticky) this.stickyRoutes.delete(matchedKey);
     if (sticky && sticky.inFlight < this.concurrencyLimit(sticky)) {
-      this.rememberSticky(stickyKey, sticky);
+      this.rememberSticky(identity.rememberKey, sticky);
       return this.lease(sticky);
     }
+    if (sticky) this.rememberSticky(identity.rememberKey, sticky);
 
     const ready = eligible.filter((key) => key.inFlight < this.concurrencyLimit(key));
     const available = this.quotaBalanced(ready);
@@ -113,7 +123,7 @@ export class KeyPool {
       }
     }
     schedule.set(selected.id, best - totalWeight);
-    if (this.stickyEnabled && stickyKey && !sticky) this.rememberSticky(stickyKey, selected);
+    if (identity && !sticky) this.rememberSticky(identity.rememberKey, selected);
     return this.lease(selected);
   }
 
@@ -166,6 +176,10 @@ export class KeyPool {
     this.store.setStickyRoutingEnabled(this.stickyEnabled);
     if (!this.stickyEnabled) this.stickyRoutes.clear();
     return this.stickyStats();
+  }
+
+  clearSticky() {
+    this.stickyRoutes.clear();
   }
 
   stickyStats() {

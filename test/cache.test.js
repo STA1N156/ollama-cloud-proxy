@@ -100,6 +100,9 @@ test('支持完整命中、同模型前缀 token 和跨模型估算', async (t) 
   const first = buildFingerprint('/v1/chat/completions', {
     messages: [{ role: 'system', content: '规则' }, { role: 'user', content: '问题' }],
   }, store.masterKey);
+  assert.deepEqual(await ledger.fingerprint('/v1/chat/completions', {
+    messages: [{ role: 'system', content: '规则' }, { role: 'user', content: '问题' }],
+  }), first);
   assert.equal((await ledger.lookup(first, 'model-a')).matched, false);
   ledger.register(first, 'model-a', 50);
 
