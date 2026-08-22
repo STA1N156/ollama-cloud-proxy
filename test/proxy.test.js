@@ -168,6 +168,58 @@ test('零限速正文不等待缓存线程，最终 usage 仍注入命中 token'
   assert.match(writes.join(''), /"cached_tokens":50/);
 });
 
+test('粘性指纹等待超时后继续复用同一任务计算缓存', async (t) => {
+  const fingerprint = {
+    endpoint: '/v1/chat/completions',
+    entries: [{ hash: 'same-content', weight: 10 }],
+    totalWeight: 10,
+  };
+  let finishFingerprint;
+  const fingerprintReady = new Promise((resolve) => { finishFingerprint = resolve; });
+  const calls = { fingerprint: 0, lookup: 0, resolve: 0, register: 0 };
+  const ledger = {
+    fingerprint() { calls.fingerprint += 1; return fingerprintReady; },
+    lookup(value) {
+      calls.lookup += 1;
+      assert.equal(value, fingerprint);
+      return Promise.resolve({ matched: false, exact: false, weight: 0, observedTokens: 0 });
+    },
+    resolve() { calls.resolve += 1; throw new Error('不应重复计算指纹'); },
+    register() { calls.register += 1; },
+  };
+  const upstreamServer = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* 读取请求体 */ }
+    finishFingerprint(fingerprint);
+    res.setHeader('content-type', 'application/json');
+    res.end('{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}');
+  });
+  const upstreamUrl = await listen(upstreamServer);
+  const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1` });
+  const store = new Store(config);
+  store.addUpstreamKey('upstream', 'upstream-key');
+  store.addClientKey('client', 'client-key');
+  store.setStickyRoutingEnabled(true);
+  const usage = new UsageLedger(store);
+  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
+  const proxy = new ProxyHandler(config, store, pool, ledger, usage);
+  const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
+  const proxyUrl = await listen(proxyServer);
+  t.after(async () => {
+    await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
+    await usage.close(); store.close(); config.cleanup();
+  });
+
+  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer client-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'model-a', messages: [{ role: 'user', content: 'hello' }] }),
+  });
+  assert.equal(response.status, 200);
+  await response.json();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, { fingerprint: 1, lookup: 1, resolve: 0, register: 1 });
+});
+
 test('白名单并发模式超额时立即返回指定503，完成后释放名额', async (t) => {
   let received = 0;
   const upstreamServer = http.createServer(async (req, res) => {
@@ -360,15 +412,11 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     }));
   });
 
-  let groups;
   for (let index = 0; index < 20; index += 1) {
-    groups = await usage.groups(1);
-    if (groups.byKeyModel.reduce((sum, row) => sum + Number(row.requests), 0) === 4) break;
+    await usage.flush();
+    if (Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens) === 390) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(groups.byKeyModel.reduce((sum, row) => sum + Number(row.requests), 0), 4);
-  assert.equal(groups.byKeyModel.reduce((sum, row) => sum + Number(row.cached_tokens), 0), 390);
-  assert.ok(groups.byKeyModel.every((row) => row.key_label === 'good'));
   assert.equal(Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens), 390);
 
   const slowStarted = Date.now();

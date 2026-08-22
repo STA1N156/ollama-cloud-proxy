@@ -114,18 +114,6 @@ export class Store {
         total_tokens INTEGER NOT NULL DEFAULT 0
       );
 
-      CREATE TABLE IF NOT EXISTS usage_hourly (
-        hour INTEGER NOT NULL,
-        upstream_key_id INTEGER NOT NULL,
-        model TEXT NOT NULL,
-        requests INTEGER NOT NULL DEFAULT 0,
-        successes INTEGER NOT NULL DEFAULT 0,
-        prompt_tokens INTEGER NOT NULL DEFAULT 0,
-        completion_tokens INTEGER NOT NULL DEFAULT 0,
-        cached_tokens INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (hour, upstream_key_id, model)
-      );
-
       CREATE TABLE IF NOT EXISTS usage_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL

@@ -247,6 +247,38 @@ test('高并发时 MAX 固定10并发、PRO 固定3并发', async (t) => {
   assert.ok(peak.get(2) <= 3);
 });
 
+test('等待队列每释放一个名额只唤醒一个请求', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  store.addUpstreamKey('A', 'key-a');
+  const pool = new KeyPool(store);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  const occupied = [];
+  for (let index = 0; index < 10; index += 1) occupied.push(await pool.acquire('model-a'));
+  const originalTryAcquire = pool.tryAcquire.bind(pool);
+  let attempts = 0;
+  pool.tryAcquire = (...args) => {
+    attempts += 1;
+    return originalTryAcquire(...args);
+  };
+  const waiting = Array.from({ length: 50 }, async () => {
+    const lease = await pool.acquire('model-a');
+    lease.release();
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const attemptsBeforeRelease = attempts;
+
+  pool.report(1, 'new');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, attemptsBeforeRelease);
+
+  occupied.pop().release();
+  await Promise.all(waiting);
+  occupied.forEach((lease) => lease.release());
+  assert.ok(attempts <= 110, `等待请求被重复唤醒：${attempts} 次`);
+});
+
 test('外部 API 密钥不受单密钥并发上限限制', (t) => {
   const config = tempConfig();
   const store = new Store(config);

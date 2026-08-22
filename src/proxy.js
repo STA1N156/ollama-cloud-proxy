@@ -38,6 +38,15 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
   signal?.addEventListener('abort', abort, { once: true });
 });
 
+const waitForFingerprint = (job, timeoutMs = 50) => new Promise((resolve) => {
+  const timer = setTimeout(() => resolve(null), timeoutMs);
+  timer.unref();
+  job.then((fingerprint) => {
+    clearTimeout(timer);
+    resolve(fingerprint);
+  });
+});
+
 function normalizeReasoning(object) {
   let normalized = false;
   for (const choice of object?.choices || []) {
@@ -303,7 +312,6 @@ export class ProxyHandler {
   }
 
   async handle(req, res) {
-    const started = Date.now();
     const url = new URL(req.url, 'http://proxy.local');
     if (req.method === 'OPTIONS') {
       const origin = rphOrigins.has(req.headers.origin) ? req.headers.origin : '*';
@@ -364,8 +372,10 @@ export class ProxyHandler {
     let fingerprintRequest = supportsLocalCache ? cacheRequest(request) : null;
     const explicitStickyKey = this.pool.stickyEnabled ? routingSessionKey(req.headers, request, clientKeyId, model) : '';
     let contentFingerprint;
+    let contentFingerprintJob;
     if (this.pool.stickyEnabled && !explicitStickyKey && fingerprintRequest) {
-      contentFingerprint = await this.ledger.fingerprint(url.pathname, fingerprintRequest).catch(() => null);
+      contentFingerprintJob = this.ledger.fingerprint(url.pathname, fingerprintRequest).catch(() => null);
+      contentFingerprint = await waitForFingerprint(contentFingerprintJob);
     }
     const stickyIdentity = explicitStickyKey || contentRoutingIdentity(contentFingerprint, clientKeyId, model);
     const excluded = new Set();
@@ -387,8 +397,10 @@ export class ProxyHandler {
       hit: { matched: false, exact: false, weight: 0, observedTokens: 0 },
     };
     const startCache = () => {
-      if (!cacheJob) cacheJob = (contentFingerprint
-        ? this.ledger.lookup(contentFingerprint, model).then((hit) => ({ fingerprint: contentFingerprint, hit }))
+      if (!cacheJob) cacheJob = (contentFingerprintJob
+        ? contentFingerprintJob.then((fingerprint) => (fingerprint
+          ? this.ledger.lookup(fingerprint, model).then((hit) => ({ fingerprint, hit }))
+          : this.ledger.resolve(url.pathname, fingerprintRequest, model)))
         : this.ledger.resolve(url.pathname, fingerprintRequest, model)).then(
         (value) => { cacheState.value = value; return value; },
         (error) => { cacheState.value = cacheFallback; console.error('cache lookup failed:', error.message); return cacheFallback; },
@@ -466,7 +478,6 @@ export class ProxyHandler {
     }
 
     if (!upstream || !lease) {
-      this.usage.record({ clientKeyId, model, endpoint: url.pathname, status: 502, latencyMs: Date.now() - started, stream, error: lastError?.message });
       return jsonError(res, 502, lastError?.message || this.store.errorMessage('api_unavailable'));
     }
 
@@ -528,18 +539,11 @@ export class ProxyHandler {
         this.ledger.register(fingerprint, model, usage?.promptTokens || 0);
       });
       this.usage.record({
-        upstreamKeyId: lease.id,
         clientKeyId,
-        model,
-        endpoint: url.pathname,
         promptTokens: usage?.promptTokens || 0,
         completionTokens: usage?.completionTokens || 0,
         cachedTokens: usage?.cachedTokens || 0,
         totalTokens: usage?.totalTokens || 0,
-        status: upstream.status,
-        latencyMs: Date.now() - started,
-        stream,
-        error: lastError?.message || '',
       });
     }
   }

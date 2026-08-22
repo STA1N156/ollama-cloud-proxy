@@ -46,21 +46,22 @@ export class UsageLedger {
   }
 
   record(event) {
-    const { upstreamKeyId, clientKeyId, model, promptTokens, completionTokens, cachedTokens, totalTokens, status } = event;
+    const clientKeyId = Number(event.clientKeyId);
+    const promptTokens = Number(event.promptTokens) || 0;
+    const completionTokens = Number(event.completionTokens) || 0;
+    const cachedTokens = Number(event.cachedTokens) || 0;
+    const totalTokens = Number(event.totalTokens) || promptTokens + completionTokens;
+    if (!Number.isInteger(clientKeyId) || (!promptTokens && !completionTokens && !cachedTokens && !totalTokens)) return;
     try {
       this.worker?.postMessage({
         type: 'record',
-        event: { createdAt: Date.now(), upstreamKeyId, clientKeyId, model, promptTokens, completionTokens, cachedTokens, totalTokens, status },
+        event: { clientKeyId, promptTokens, completionTokens, cachedTokens, totalTokens },
       });
     } catch {}
   }
 
   reportHealth(event) {
     try { this.worker?.postMessage({ type: 'health', event }); } catch {}
-  }
-
-  groups(hours) {
-    return this.request('groups', { hours });
   }
 
   flush() {

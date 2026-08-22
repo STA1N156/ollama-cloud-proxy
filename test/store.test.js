@@ -73,7 +73,7 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   const store = new Store(config);
   const usage = new UsageLedger(store);
   t.after(async () => { await usage.close(); store.close(); config.cleanup(); });
-  const upstreamId = store.addUpstreamKey('上游一', 'upstream-one');
+  store.addUpstreamKey('上游一', 'upstream-one');
   assert.equal(store.listClientKeys()[0].copyable, false);
   assert.throws(() => store.getClientKeyToken(1), /旧版密钥无法恢复/);
 
@@ -93,21 +93,16 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   assert.deepEqual(store.getClientAccess('ocp_copy_me'), { id, outputTps: 12, allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 35 });
   assert.throws(() => store.setClientAllowedOrigin(id, 'limit:50'), /不支持的访问控制模式/);
   usage.record({
-    upstreamKeyId: upstreamId,
     clientKeyId: id,
-    model: 'model-a',
-    endpoint: '/v1/chat/completions',
     promptTokens: 10,
     completionTokens: 2,
     cachedTokens: 5,
     totalTokens: 12,
-    status: 200,
-    latencyMs: 20,
   });
-  const firstGroups = await usage.groups(1);
+  await usage.flush();
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 12);
-  assert.equal(Number(firstGroups.byKeyModel[0].key_id), upstreamId);
   assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_events'").get(), undefined);
+  assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_hourly'").get(), undefined);
 
   await usage.clear();
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 0);

@@ -141,7 +141,7 @@ export class KeyPool {
         if (released) return;
         released = true;
         selected.inFlight = Math.max(0, selected.inFlight - 1);
-        this.wake();
+        this.wake(selected);
       },
     };
   }
@@ -196,27 +196,35 @@ export class KeyPool {
       const lease = this.tryAcquire(model, excluded, sourceUrl, stickyKey);
       if (lease) return lease;
       if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : this.store.errorMessage('api_unavailable'));
-      await this.wait(signal, generation);
+      await this.wait(signal, generation, model, excluded, sourceUrl);
     }
   }
 
-  wait(signal, generation) {
+  wait(signal, generation, model, excluded, sourceUrl) {
     if (signal?.aborted) return Promise.reject(signal.reason || new Error('请求已取消'));
     if (generation !== this.generation) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const done = () => { cleanup(); resolve(); };
+      const waiter = { model, excluded, sourceUrl, done: () => { cleanup(); resolve(); } };
       const abort = () => { cleanup(); reject(signal.reason || new Error('请求已取消')); };
-      const cleanup = () => { this.waiters.delete(done); signal?.removeEventListener('abort', abort); };
-      this.waiters.add(done);
+      const cleanup = () => { this.waiters.delete(waiter); signal?.removeEventListener('abort', abort); };
+      this.waiters.add(waiter);
       signal?.addEventListener('abort', abort, { once: true });
     });
   }
 
-  wake() {
+  wake(key = null) {
     this.generation += 1;
-    const waiters = [...this.waiters];
-    this.waiters.clear();
-    for (const resolve of waiters) resolve();
+    if (!key) {
+      for (const waiter of [...this.waiters]) waiter.done();
+      return;
+    }
+    if (key.inFlight >= this.concurrencyLimit(key)) return;
+    for (const waiter of this.waiters) {
+      if (this.eligible(key, waiter.model, waiter.excluded, waiter.sourceUrl)) {
+        waiter.done();
+        return;
+      }
+    }
   }
 
   report(id, status, error = '', cooldownMs = 0) {
@@ -232,8 +240,10 @@ export class KeyPool {
       key.stickyGeneration += 1;
       for (const schedule of this.schedules.values()) schedule.delete(id);
     }
-    if (changed) this.reportHealth?.({ id, status, error: message, cooldownUntil });
-    this.wake();
+    if (changed) {
+      this.reportHealth?.({ id, status, error: message, cooldownUntil });
+      this.wake();
+    }
   }
 
   updateQuota(id, quota, error = '') {
