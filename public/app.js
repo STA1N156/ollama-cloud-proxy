@@ -79,6 +79,11 @@ function renderCache() {
   $('#rp-cache-toggle').checked = Boolean(state.cache.rpEnabled);
   $('#rp-cache-status').textContent = state.cache.rpEnabled ? '开启' : '关闭';
   $('#rp-cache-note').textContent = `已储存 ${num(state.cache.rpEntries)} 个分块 · 1 小时过期 · 上限 ${bytes(state.cache.limitBytes)}`;
+  $('#sticky-routing-toggle').checked = Boolean(state.cache.stickyEnabled);
+  $('#sticky-routing-status').textContent = state.cache.stickyEnabled ? '开启' : '关闭';
+  $('#sticky-routing-note').textContent = state.cache.stickyEnabled
+    ? `${num(state.cache.stickyEntries)} 个活跃会话 · 1 小时无请求过期`
+    : '同一会话优先沿用上游密钥';
 }
 
 function renderModelMeta() {
@@ -320,6 +325,18 @@ $('#rp-cache-toggle').addEventListener('change', async (event) => {
   try {
     await api('/admin/api/cache/rp', { method: 'PATCH', body: JSON.stringify({ enabled: input.checked }) });
     toast(input.checked ? 'RP 缓存已开启' : 'RP 缓存已关闭');
+    await load('cache');
+  } catch (error) {
+    toast(error.message);
+    await load('cache');
+  } finally { input.disabled = false; }
+});
+$('#sticky-routing-toggle').addEventListener('change', async (event) => {
+  const input = event.currentTarget;
+  input.disabled = true;
+  try {
+    await api('/admin/api/cache/sticky', { method: 'PATCH', body: JSON.stringify({ enabled: input.checked }) });
+    toast(input.checked ? '粘性路由已开启' : '粘性路由已关闭');
     await load('cache');
   } catch (error) {
     toast(error.message);

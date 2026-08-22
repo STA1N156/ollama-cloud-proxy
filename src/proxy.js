@@ -1,7 +1,8 @@
 import { cachedTokenCount } from './cache.js';
+import { sha256 } from './crypto.js';
 
 const retryable = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
-const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
+const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'x-proxy-session']);
 const rphOrigins = new Set(['https://sta1n156.github.io', 'https://api.sta1n.site', 'https://cdn.sta1n.cn']);
 const codexRouterAgent = /^codex-router\/\S+/i;
 const internalServerError400 = (status, body) => status === 400 && /\binternal server error\b/i.test(body);
@@ -14,6 +15,12 @@ const jsonError = (res, status, message, type = 'proxy_error') => {
 };
 
 const bearer = (header = '') => header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || '';
+
+export function routingSessionKey(headers, request, clientKeyId, model) {
+  const header = Array.isArray(headers['x-proxy-session']) ? headers['x-proxy-session'][0] : headers['x-proxy-session'];
+  const session = String(header || request?.user || '').trim();
+  return session ? sha256(`${clientKeyId ?? 'anonymous'}\0${model}\0${session}`) : '';
+}
 
 const wait = (ms, signal) => new Promise((resolve, reject) => {
   if (ms <= 0) return resolve();
@@ -295,7 +302,7 @@ export class ProxyHandler {
       const origin = rphOrigins.has(req.headers.origin) ? req.headers.origin : '*';
       res.writeHead(204, {
         'access-control-allow-origin': origin,
-        'access-control-allow-headers': 'authorization, content-type',
+        'access-control-allow-headers': 'authorization, content-type, x-proxy-session',
         'access-control-allow-methods': 'GET, POST, OPTIONS',
         'access-control-max-age': '600',
       });
@@ -342,6 +349,7 @@ export class ProxyHandler {
 
     const model = typeof request.model === 'string' ? request.model : '';
     if (!model) return jsonError(res, 400, this.store.errorMessage('model_required'), 'invalid_request_error');
+    const stickyKey = this.pool.stickyEnabled ? routingSessionKey(req.headers, request, clientKeyId, model) : '';
     const stream = request.stream === true;
     const clientWantsUsage = includeUsage(request);
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
@@ -376,11 +384,11 @@ export class ProxyHandler {
     while (ordinaryFailures < this.config.retryCount) {
       try {
         try {
-          lease = await this.pool.acquire(model, excluded, controller.signal);
+          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyKey);
         } catch (error) {
           if (controller.signal.aborted || !excluded.size) throw error;
           excluded.clear();
-          lease = await this.pool.acquire(model, excluded, controller.signal);
+          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyKey);
         }
         excluded.add(lease.id);
         const target = `${lease.baseUrl}${url.pathname.slice(3)}${url.search}`;

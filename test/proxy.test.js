@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { CacheLedger } from '../src/cache.js';
 import { KeyPool } from '../src/key-pool.js';
 import { ModelSync } from '../src/model-sync.js';
-import { injectUsage, ProxyHandler } from '../src/proxy.js';
+import { injectUsage, ProxyHandler, routingSessionKey } from '../src/proxy.js';
 import { Store } from '../src/store.js';
 import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
@@ -16,6 +16,15 @@ const listen = async (server) => {
   return `http://127.0.0.1:${server.address().port}`;
 };
 const cache = (hit, totalWeight = 1) => async () => ({ hit, fingerprint: { totalWeight } });
+
+test('粘性会话标识优先读取请求头并隔离下游密钥和模型', () => {
+  const fromUser = routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-a');
+  assert.equal(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-a'));
+  assert.notEqual(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 2, 'model-a'));
+  assert.notEqual(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-b'));
+  assert.notEqual(fromUser, routingSessionKey({ 'x-proxy-session': 'header-session' }, { user: 'roleplay-1' }, 1, 'model-a'));
+  assert.equal(routingSessionKey({}, {}, 1, 'model-a'), '');
+});
 
 test('按 New API 标准回报缓存 token 和思考过程', () => {
   const hit = { matched: true, exact: true, weight: 10, observedTokens: 0 };

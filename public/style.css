@@ -140,7 +140,7 @@ td.api-url { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .quota-model-row strong { flex: none; font: 650 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .quota-wait { min-height: 116px; padding: 20px 17px; display: grid; place-content: center; gap: 7px; text-align: center; }
 .quota-wait span { max-width: 420px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.cache-layout { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; }
+.cache-layout { display: grid; grid-template-columns: repeat(4, minmax(200px, 1fr)); gap: 12px; }
 .cache-card { min-height: 150px; }
 .cache-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .switch { position: relative; display: inline-flex; flex: none; cursor: pointer; }

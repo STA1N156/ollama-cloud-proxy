@@ -181,7 +181,7 @@ export class AdminHandler {
       });
     }
     if (url.pathname === '/admin/api/cache' && req.method === 'GET') {
-      return send(res, 200, { cache: await this.ledger.stats() });
+      return send(res, 200, { cache: { ...await this.ledger.stats(), ...this.pool.stickyStats() } });
     }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);
@@ -247,6 +247,10 @@ export class AdminHandler {
     if (url.pathname === '/admin/api/cache/rp' && req.method === 'PATCH') {
       const body = await json(req);
       return send(res, 200, await this.ledger.setRpEnabled(Boolean(body.enabled)));
+    }
+    if (url.pathname === '/admin/api/cache/sticky' && req.method === 'PATCH') {
+      const body = await json(req);
+      return send(res, 200, this.pool.setStickyEnabled(Boolean(body.enabled)));
     }
     if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {
       await this.usage.clear();

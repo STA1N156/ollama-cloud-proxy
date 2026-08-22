@@ -21,6 +21,17 @@ test('错误提示可修改、持久化并一键恢复默认', (t) => {
   assert.equal(store.errorMessage('api_unavailable'), 'API 暂时不可用');
 });
 
+test('粘性路由开关默认关闭并持久化', (t) => {
+  const config = tempConfig();
+  let store = new Store(config);
+  t.after(() => { store.close(); config.cleanup(); });
+  assert.equal(store.stickyRoutingEnabled(), false);
+  store.setStickyRoutingEnabled(true);
+  store.close();
+  store = new Store(config);
+  assert.equal(store.stickyRoutingEnabled(), true);
+});
+
 test('旧白名单2自动合并到统一白名单', (t) => {
   const config = tempConfig();
   const legacy = new DatabaseSync(config.databasePath);

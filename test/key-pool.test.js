@@ -31,6 +31,34 @@ test('同一模型在健康密钥间公平轮询', async (t) => {
   assert.deepEqual(ids, [1, 2, 1, 2]);
 });
 
+test('粘性路由复用同一密钥但额度失衡时立即重新分配', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const firstId = store.addUpstreamKey('A', 'key-a');
+  const secondId = store.addUpstreamKey('B', 'key-b');
+  store.setStickyRoutingEnabled(true);
+  const pool = new KeyPool(store);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  let lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
+  assert.equal(lease.id, firstId);
+  lease.release();
+  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
+  assert.equal(lease.id, firstId);
+  lease.release();
+  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-b');
+  assert.equal(lease.id, secondId);
+  lease.release();
+
+  pool.updateQuota(firstId, { session: { usage: 0.1 }, weekly: { usage: 0.8 } });
+  pool.updateQuota(secondId, { session: { usage: 0.1 }, weekly: { usage: 0.2 } });
+  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
+  assert.equal(lease.id, secondId);
+  lease.release();
+  assert.deepEqual(pool.stickyStats(), { stickyEnabled: true, stickyEntries: 2, stickyTtlMs: 3_600_000 });
+  assert.deepEqual(pool.setStickyEnabled(false), { stickyEnabled: false, stickyEntries: 0, stickyTtlMs: 3_600_000 });
+});
+
 test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {
   const config = tempConfig();
   const store = new Store(config);

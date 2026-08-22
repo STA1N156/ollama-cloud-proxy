@@ -149,6 +149,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_cache_rp_updated ON prompt_cache_rp(updated_at);
     `);
     this.db.prepare("INSERT OR IGNORE INTO cache_settings(key, value) VALUES ('rp_enabled', '0')").run();
+    this.db.prepare("INSERT OR IGNORE INTO cache_settings(key, value) VALUES ('sticky_routing_enabled', '0')").run();
     const clientColumns = this.db.prepare('PRAGMA table_info(client_keys)').all();
     if (!clientColumns.some((column) => column.name === 'token_secret')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN token_secret TEXT NOT NULL DEFAULT ''");
@@ -212,6 +213,15 @@ export class Store {
 
   close() {
     this.db.close();
+  }
+
+  stickyRoutingEnabled() {
+    return this.db.prepare("SELECT value FROM cache_settings WHERE key='sticky_routing_enabled'").get()?.value === '1';
+  }
+
+  setStickyRoutingEnabled(enabled) {
+    this.db.prepare("INSERT INTO cache_settings(key, value) VALUES ('sticky_routing_enabled', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(enabled ? '1' : '0');
   }
 
   errorMessage(key, variables) {

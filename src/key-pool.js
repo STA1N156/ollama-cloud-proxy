@@ -31,6 +31,9 @@ const updateQuotaHistory = (history, usage, at) => {
   return estimateQuotaExhaustion(history);
 };
 
+const STICKY_TTL_MS = 60 * 60_000;
+const MAX_STICKY_ROUTES = 50_000;
+
 export class KeyPool {
   constructor(store, reportHealth) {
     this.store = store;
@@ -38,6 +41,8 @@ export class KeyPool {
     this.keys = new Map();
     this.schedules = new Map();
     this.waiters = new Set();
+    this.stickyEnabled = store.stickyRoutingEnabled();
+    this.stickyRoutes = new Map();
     this.generation = 0;
     this.reload();
   }
@@ -53,7 +58,7 @@ export class KeyPool {
     const seen = new Set();
     for (const row of fresh) {
       seen.add(row.id);
-      const current = this.keys.get(row.id) || { inFlight: 0 };
+      const current = this.keys.get(row.id) || { inFlight: 0, stickyGeneration: 0 };
       Object.assign(current, row);
       this.keys.set(row.id, current);
     }
@@ -70,7 +75,7 @@ export class KeyPool {
     return !this.hasModels || this.modelsBySource.get(key.base_url)?.has(model);
   }
 
-  tryAcquire(model, excluded, sourceUrl) {
+  tryAcquire(model, excluded, sourceUrl, stickyKey) {
     const keys = this.sortedKeys;
     const eligible = keys.filter((key) => this.eligible(key, model, excluded, sourceUrl));
     if (!eligible.length) return null;
@@ -78,23 +83,32 @@ export class KeyPool {
     const available = this.quotaBalanced(ready);
     if (!available.length) return undefined;
 
-    const scheduleKey = `${sourceUrl || '*'}\0${model}`;
-    const schedule = this.schedules.get(scheduleKey) || new Map();
-    this.schedules.set(scheduleKey, schedule);
-    let selected;
-    let best = -Infinity;
-    let totalWeight = 0;
-    for (const key of available) {
-      const weight = key.tier === 'pro' ? 1 : 5;
-      const score = (schedule.get(key.id) || 0) + weight;
-      schedule.set(key.id, score);
-      totalWeight += weight;
-      if (score > best) {
-        selected = key;
-        best = score;
+    const route = this.stickyEnabled && stickyKey ? this.stickyRoutes.get(stickyKey) : null;
+    const sticky = route && route.expiresAt > Date.now()
+      ? available.find((key) => key.id === route.keyId && key.stickyGeneration === route.generation)
+      : null;
+    if (route && !sticky) this.stickyRoutes.delete(stickyKey);
+
+    let selected = sticky;
+    if (!selected) {
+      const scheduleKey = `${sourceUrl || '*'}\0${model}`;
+      const schedule = this.schedules.get(scheduleKey) || new Map();
+      this.schedules.set(scheduleKey, schedule);
+      let best = -Infinity;
+      let totalWeight = 0;
+      for (const key of available) {
+        const weight = key.tier === 'pro' ? 1 : 5;
+        const score = (schedule.get(key.id) || 0) + weight;
+        schedule.set(key.id, score);
+        totalWeight += weight;
+        if (score > best) {
+          selected = key;
+          best = score;
+        }
       }
+      schedule.set(selected.id, best - totalWeight);
     }
-    schedule.set(selected.id, best - totalWeight);
+    if (this.stickyEnabled && stickyKey) this.rememberSticky(stickyKey, selected);
     selected.inFlight += 1;
     let released = false;
     return {
@@ -128,10 +142,35 @@ export class KeyPool {
     return keys.filter((key) => key.base_url !== this.store.defaultUpstreamBaseUrl || !fresh.includes(key) || balanced.has(key.id));
   }
 
-  async acquire(model, excluded = new Set(), signal, sourceUrl) {
+  rememberSticky(stickyKey, key) {
+    this.stickyRoutes.delete(stickyKey);
+    this.stickyRoutes.set(stickyKey, {
+      keyId: key.id,
+      generation: key.stickyGeneration,
+      expiresAt: Date.now() + STICKY_TTL_MS,
+    });
+    while (this.stickyRoutes.size > MAX_STICKY_ROUTES) this.stickyRoutes.delete(this.stickyRoutes.keys().next().value);
+  }
+
+  setStickyEnabled(enabled) {
+    this.stickyEnabled = Boolean(enabled);
+    this.store.setStickyRoutingEnabled(this.stickyEnabled);
+    if (!this.stickyEnabled) this.stickyRoutes.clear();
+    return this.stickyStats();
+  }
+
+  stickyStats() {
+    const stamp = Date.now();
+    for (const [key, route] of this.stickyRoutes) {
+      if (route.expiresAt <= stamp || !this.keys.has(route.keyId)) this.stickyRoutes.delete(key);
+    }
+    return { stickyEnabled: this.stickyEnabled, stickyEntries: this.stickyRoutes.size, stickyTtlMs: STICKY_TTL_MS };
+  }
+
+  async acquire(model, excluded = new Set(), signal, sourceUrl, stickyKey) {
     while (true) {
       const generation = this.generation;
-      const lease = this.tryAcquire(model, excluded, sourceUrl);
+      const lease = this.tryAcquire(model, excluded, sourceUrl, stickyKey);
       if (lease) return lease;
       if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : this.store.errorMessage('api_unavailable'));
       await this.wait(signal, generation);
@@ -166,7 +205,10 @@ export class KeyPool {
     key.status = status;
     key.last_error = message;
     key.cooldown_until = cooldownUntil;
-    if (status !== 'healthy') for (const schedule of this.schedules.values()) schedule.delete(id);
+    if (status !== 'healthy') {
+      key.stickyGeneration += 1;
+      for (const schedule of this.schedules.values()) schedule.delete(id);
+    }
     if (changed) this.reportHealth?.({ id, status, error: message, cooldownUntil });
     this.wake();
   }
@@ -202,7 +244,7 @@ export class KeyPool {
   }
 
   snapshot() {
-    return [...this.keys.values()].map(({ secret, secret_hash, quotaHistory, ...key }) => ({
+    return [...this.keys.values()].map(({ secret, secret_hash, quotaHistory, stickyGeneration, ...key }) => ({
       ...key,
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,
