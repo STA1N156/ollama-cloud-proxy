@@ -21,7 +21,15 @@ test('Ollama 单密钥测试使用 deepseek-v4-flash:0731 发送消息', async (
   const store = new Store(config);
   const id = store.addUpstreamKey('Ollama', 'key-a');
   const reports = [];
-  const admin = new AdminHandler(config, store, { report: (...args) => reports.push(args) }, null, null, { sync: async () => {} });
+  let acquired;
+  const pool = {
+    report: (...args) => reports.push(args),
+    acquire: async (model, excluded, signal, sourceUrl) => {
+      acquired = { model, sourceUrl };
+      return { id, baseUrl: config.upstreamBaseUrl, secret: 'key-a', release() {} };
+    },
+  };
+  const admin = new AdminHandler(config, store, pool, null, null, { sync: async () => {} });
   t.after(() => { upstream.close(); store.close(); config.cleanup(); });
 
   assert.deepEqual(await admin.testKey(id), { ok: true });
@@ -30,4 +38,9 @@ test('Ollama 单密钥测试使用 deepseek-v4-flash:0731 发送消息', async (
   assert.equal(request.body.model, 'deepseek-v4-flash:0731');
   assert.deepEqual(request.body.messages, [{ role: 'user', content: '请只回复 OK' }]);
   assert.equal(reports.at(-1)[1], 'healthy');
+
+  assert.deepEqual(await admin.testModel('model-a', config.upstreamBaseUrl), { ok: true });
+  assert.deepEqual(acquired, { model: 'model-a', sourceUrl: config.upstreamBaseUrl });
+  assert.equal(request.body.model, 'model-a');
+  assert.deepEqual(request.body.messages, [{ role: 'user', content: '请只回复 OK' }]);
 });

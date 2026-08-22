@@ -46,23 +46,21 @@ export class UsageLedger {
   }
 
   record(event) {
-    try { this.worker?.postMessage({ type: 'record', event: { createdAt: Date.now(), ...event } }); } catch {}
+    const { upstreamKeyId, clientKeyId, model, promptTokens, completionTokens, cachedTokens, totalTokens, status } = event;
+    try {
+      this.worker?.postMessage({
+        type: 'record',
+        event: { createdAt: Date.now(), upstreamKeyId, clientKeyId, model, promptTokens, completionTokens, cachedTokens, totalTokens, status },
+      });
+    } catch {}
   }
 
   reportHealth(event) {
     try { this.worker?.postMessage({ type: 'health', event }); } catch {}
   }
 
-  overview(hours) {
-    return this.request('overview', { hours });
-  }
-
   groups(hours) {
     return this.request('groups', { hours });
-  }
-
-  summary(hours) {
-    return this.request('summary', { hours });
   }
 
   flush() {

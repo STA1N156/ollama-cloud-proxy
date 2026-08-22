@@ -242,11 +242,11 @@ export class ProxyHandler {
     if (token) {
       const access = this.store.getClientAccess(token);
       if (access) return access;
-      throw Object.assign(new Error('下游访问密钥无效'), { status: 401 });
+      throw Object.assign(new Error(this.store.errorMessage('invalid_client_key')), { status: 401 });
     }
     if (this.config.allowAnonymous) return { id: null, outputTps: 0, allowedOrigin: '', concurrencyLimit: 0 };
-    if (!this.store.clientKeyCount()) throw Object.assign(new Error('尚未配置下游访问密钥，请先登录 /admin 创建'), { status: 503 });
-    throw Object.assign(new Error('缺少下游访问密钥'), { status: 401 });
+    if (!this.store.clientKeyCount()) throw Object.assign(new Error(this.store.errorMessage('no_client_keys')), { status: 503 });
+    throw Object.assign(new Error(this.store.errorMessage('missing_client_key')), { status: 401 });
   }
 
   models(res, name = '') {
@@ -258,7 +258,7 @@ export class ProxyHandler {
       owned_by: item.source_label || 'upstream',
     });
     const selected = name ? models.find((item) => item.model === name || item.name === name) : null;
-    if (name && !selected) return jsonError(res, 404, `模型不存在：${name}`, 'invalid_request_error');
+    if (name && !selected) return jsonError(res, 404, this.store.errorMessage('model_not_found', { model: name }), 'invalid_request_error');
     const body = JSON.stringify(selected ? convert(selected) : { object: 'list', data: models.map(convert) });
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
@@ -310,7 +310,7 @@ export class ProxyHandler {
     const allowedSite = rphOrigins.has(req.headers.origin);
     const allowedRouter = codexRouterAgent.test(req.headers['user-agent'] || '');
     if (clientAccess.allowedOrigin && !allowedSite && !allowedRouter) {
-      return jsonError(res, 403, '公益模型仅限在RP-Hub官方源站使用，如您再次尝试不合规请求，账号将遭到封禁，请切换付费分组或转至官方源站使用', 'permission_error');
+      return jsonError(res, 403, this.store.errorMessage('whitelist_denied'), 'permission_error');
     }
     const originRestricted = clientAccess.allowedOrigin && allowedSite;
     res.setHeader('access-control-allow-origin', originRestricted ? req.headers.origin : '*');
@@ -319,11 +319,11 @@ export class ProxyHandler {
 
     if (req.method === 'GET' && url.pathname === '/v1/models') return this.models(res);
     if (req.method === 'GET' && url.pathname.startsWith('/v1/models/')) return this.models(res, decodeURIComponent(url.pathname.slice(11)));
-    if (req.method !== 'POST' || !url.pathname.startsWith('/v1/')) return jsonError(res, 404, '接口不存在', 'invalid_request_error');
+    if (req.method !== 'POST' || !url.pathname.startsWith('/v1/')) return jsonError(res, 404, this.store.errorMessage('endpoint_not_found'), 'invalid_request_error');
 
     const releaseClientSlot = this.acquireClientSlot(clientAccess);
     if (releaseClientSlot === null) {
-      return jsonError(res, 503, '当前公益模型负载较高，暂时超出配额，请切换模型或稍后重试', 'server_error');
+      return jsonError(res, 503, this.store.errorMessage('client_overloaded'), 'server_error');
     }
     if (releaseClientSlot) {
       res.once('finish', releaseClientSlot);
@@ -336,11 +336,12 @@ export class ProxyHandler {
       raw = await readBody(req, this.config.maxRequestBytes);
       request = JSON.parse(raw.toString('utf8'));
     } catch (error) {
-      return jsonError(res, error.status || 400, error.status ? error.message : 'JSON 请求体无效', 'invalid_request_error');
+      const message = error.status === 413 ? this.store.errorMessage('request_too_large') : this.store.errorMessage('invalid_json');
+      return jsonError(res, error.status || 400, message, 'invalid_request_error');
     }
 
     const model = typeof request.model === 'string' ? request.model : '';
-    if (!model) return jsonError(res, 400, 'model 不能为空', 'invalid_request_error');
+    if (!model) return jsonError(res, 400, this.store.errorMessage('model_required'), 'invalid_request_error');
     const stream = request.stream === true;
     const clientWantsUsage = includeUsage(request);
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
@@ -424,7 +425,7 @@ export class ProxyHandler {
         const invalid = upstream.status === 401 || upstream.status === 403;
         const cooldown = upstream.status === 429 ? retryAfterMs(upstream) : 3000;
         this.pool.report(lease.id, invalid ? 'invalid' : upstream.status === 429 ? 'cooldown' : 'degraded', `HTTP ${upstream.status}: ${errorText}`, invalid ? 0 : cooldown);
-        lastError = new Error('API 暂时不可用');
+        lastError = new Error(this.store.errorMessage('api_unavailable'));
         lease.release();
         lease = null;
         upstream = null;
@@ -444,7 +445,7 @@ export class ProxyHandler {
 
     if (!upstream || !lease) {
       this.usage.record({ clientKeyId, model, endpoint: url.pathname, status: 502, latencyMs: Date.now() - started, stream, error: lastError?.message });
-      return jsonError(res, 502, lastError?.message || 'API 暂时不可用');
+      return jsonError(res, 502, lastError?.message || this.store.errorMessage('api_unavailable'));
     }
 
     const cacheable = supportsLocalCache && lease.useProxyCache;

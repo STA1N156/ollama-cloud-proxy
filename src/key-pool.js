@@ -1,3 +1,36 @@
+export function estimateQuotaExhaustion(history) {
+  let points = history.filter((point) => Number.isFinite(point.at) && Number.isFinite(point.usage));
+  let resetAt = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    if (points[index].usage < points[index - 1].usage - 0.001) resetAt = index;
+  }
+  points = points.slice(resetAt).slice(-6);
+  if (points.length < 3) return null;
+  const origin = points[0].at;
+  const xMean = points.reduce((sum, point) => sum + point.at - origin, 0) / points.length;
+  const yMean = points.reduce((sum, point) => sum + point.usage, 0) / points.length;
+  let numerator = 0;
+  let denominator = 0;
+  for (const point of points) {
+    const x = point.at - origin - xMean;
+    numerator += x * (point.usage - yMean);
+    denominator += x * x;
+  }
+  const rate = denominator ? numerator / denominator : 0;
+  const current = points.at(-1).usage;
+  if (current >= 1) return 0;
+  if (!(rate > 0)) return null;
+  const remaining = (1 - current) / rate;
+  return Number.isFinite(remaining) && remaining > 0 ? Math.round(remaining) : null;
+}
+
+const updateQuotaHistory = (history, usage, at) => {
+  if (!Number.isFinite(usage)) return null;
+  history.push({ usage, at });
+  if (history.length > 8) history.shift();
+  return estimateQuotaExhaustion(history);
+};
+
 export class KeyPool {
   constructor(store, reportHealth) {
     this.store = store;
@@ -100,7 +133,7 @@ export class KeyPool {
       const generation = this.generation;
       const lease = this.tryAcquire(model, excluded, sourceUrl);
       if (lease) return lease;
-      if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : `没有支持模型 ${model} 的可用上游密钥`);
+      if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : this.store.errorMessage('api_unavailable'));
       await this.wait(signal, generation);
     }
   }
@@ -145,6 +178,12 @@ export class KeyPool {
     key.quotaCheckedAt = Date.now();
     key.quotaError = error.slice(0, 300);
     if (quota) {
+      key.quotaHistory ||= { session: [], weekly: [] };
+      quota = {
+        ...quota,
+        session: { ...quota.session, exhaustionMs: updateQuotaHistory(key.quotaHistory.session, Number(quota.session?.usage), key.quotaCheckedAt) },
+        weekly: { ...quota.weekly, exhaustionMs: updateQuotaHistory(key.quotaHistory.weekly, Number(quota.weekly?.usage), key.quotaCheckedAt) },
+      };
       const sessionUsage = Number(quota.session?.usage);
       if (Number.isFinite(sessionUsage)) {
         const blocked = sessionUsage >= 0.95;
@@ -163,7 +202,7 @@ export class KeyPool {
   }
 
   snapshot() {
-    return [...this.keys.values()].map(({ secret, secret_hash, ...key }) => ({
+    return [...this.keys.values()].map(({ secret, secret_hash, quotaHistory, ...key }) => ({
       ...key,
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,

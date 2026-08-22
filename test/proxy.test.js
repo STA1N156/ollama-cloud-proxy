@@ -347,17 +347,16 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     }));
   });
 
-  let summary;
+  let groups;
   for (let index = 0; index < 20; index += 1) {
-    summary = await usage.summary(1);
-    if (Number(summary.totals.requests) === 4) break;
+    groups = await usage.groups(1);
+    if (groups.byKeyModel.reduce((sum, row) => sum + Number(row.requests), 0) === 4) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(Number(summary.totals.requests), 4);
-  assert.equal(Number(summary.totals.cached_tokens), 390);
-  assert.equal(Number(summary.recent[0].prompt_tokens), 140);
-  assert.equal(Number(summary.recent[0].cached_tokens), 140);
-  assert.ok(summary.byKeyModel.every((row) => row.key_label === 'good'));
+  assert.equal(groups.byKeyModel.reduce((sum, row) => sum + Number(row.requests), 0), 4);
+  assert.equal(groups.byKeyModel.reduce((sum, row) => sum + Number(row.cached_tokens), 0), 390);
+  assert.ok(groups.byKeyModel.every((row) => row.key_label === 'good'));
+  assert.equal(Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens), 390);
 
   const slowStarted = Date.now();
   const slowResponse = await call({ ...base, model: 'model-b', stream: false }, 'slow-key');
@@ -466,6 +465,7 @@ test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
   const upstreamUrl = await listen(upstreamServer);
   const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1`, retryCount: 10 });
   const store = new Store(config);
+  store.setErrorMessages({ api_unavailable: '自定义暂时不可用' });
   for (let index = 1; index <= 11; index += 1) store.addUpstreamKey(`Key ${index}`, `key-${index}`);
   store.addClientKey('client', 'client-key');
   const usage = new UsageLedger(store);
@@ -485,7 +485,7 @@ test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
     body: JSON.stringify({ model: 'model-a', messages: [{ role: 'user', content: 'x' }] }),
   });
   assert.equal(response.status, 502);
-  assert.equal((await response.json()).error.message, 'API 暂时不可用');
+  assert.equal((await response.json()).error.message, '自定义暂时不可用');
   assert.equal(calls.length, 10);
   assert.equal(new Set(calls).size, 10);
   assert.equal(pool.snapshot().filter((key) => key.status === 'cooldown').length, 10);

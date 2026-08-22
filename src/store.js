@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { decrypt, encrypt, loadOrCreateMasterKey, sha256 } from './crypto.js';
+import { defaultErrorMessages, errorMessageDefinitions, formatErrorMessage } from './error-messages.js';
 
 const now = () => Date.now();
 const outputTps = (value) => Math.min(1000, Math.max(0, Math.floor(Number(value) || 0)));
@@ -15,7 +16,7 @@ const clientAccessMode = (value) => {
   if (['https://sta1n156.github.io', 'codex-router'].includes(mode)) {
     return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 0 };
   }
-  const limit = Number(mode.match(/^limit:(5|10|15|20|25|30|35|40)$/)?.[1]);
+  const limit = Number(mode.match(/^limit:(3|5|10|15|20|25|30|35|40)$/)?.[1]);
   if (!limit) throw new Error('不支持的访问控制模式');
   return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: limit };
 };
@@ -100,21 +101,9 @@ export class Store {
         value TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS usage_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at INTEGER NOT NULL,
-        upstream_key_id INTEGER,
-        client_key_id INTEGER,
-        model TEXT NOT NULL,
-        endpoint TEXT NOT NULL,
-        prompt_tokens INTEGER NOT NULL DEFAULT 0,
-        completion_tokens INTEGER NOT NULL DEFAULT 0,
-        cached_tokens INTEGER NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        status INTEGER NOT NULL,
-        latency_ms INTEGER NOT NULL,
-        stream INTEGER NOT NULL DEFAULT 0,
-        error TEXT NOT NULL DEFAULT ''
+      CREATE TABLE IF NOT EXISTS error_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS client_usage_totals (
@@ -137,13 +126,6 @@ export class Store {
         PRIMARY KEY (hour, upstream_key_id, model)
       );
 
-      CREATE TABLE IF NOT EXISTS usage_latency_hourly (
-        hour INTEGER NOT NULL,
-        latency_bucket_ms INTEGER NOT NULL,
-        requests INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (hour, latency_bucket_ms)
-      );
-
       CREATE TABLE IF NOT EXISTS usage_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -161,8 +143,6 @@ export class Store {
         PRIMARY KEY (source_url, name)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
-      DROP INDEX IF EXISTS idx_usage_key_model;
       CREATE INDEX IF NOT EXISTS idx_cache_expiry ON prompt_cache(expires_at);
       CREATE INDEX IF NOT EXISTS idx_cache_updated ON prompt_cache(updated_at);
       CREATE INDEX IF NOT EXISTS idx_cache_rp_expiry ON prompt_cache_rp(expires_at);
@@ -222,12 +202,47 @@ export class Store {
       this.db.exec('DROP TABLE models_legacy');
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_models_source ON models(source_url)');
+    this.errorMessages = new Map(Object.entries(defaultErrorMessages));
+    for (const row of this.db.prepare('SELECT key, value FROM error_settings').all()) {
+      if (Object.hasOwn(defaultErrorMessages, row.key) && row.value) this.errorMessages.set(row.key, row.value);
+    }
     this.clientAccess = new Map();
     this.reloadClientAccess();
   }
 
   close() {
     this.db.close();
+  }
+
+  errorMessage(key, variables) {
+    return formatErrorMessage(this.errorMessages.get(key) || defaultErrorMessages[key] || key, variables);
+  }
+
+  listErrorMessages() {
+    return errorMessageDefinitions.map((item) => ({ ...item, value: this.errorMessages.get(item.key) || item.defaultValue }));
+  }
+
+  setErrorMessages(messages) {
+    if (!messages || typeof messages !== 'object' || Array.isArray(messages)) {
+      throw Object.assign(new Error('错误提示格式不正确'), { status: 400 });
+    }
+    const entries = Object.entries(messages).map(([key, input]) => {
+      if (!Object.hasOwn(defaultErrorMessages, key)) throw Object.assign(new Error(`未知错误提示：${key}`), { status: 400 });
+      const value = String(input || '').trim();
+      if (!value) throw Object.assign(new Error('错误提示不能为空'), { status: 400 });
+      if (value.length > 500) throw Object.assign(new Error('单条错误提示不能超过 500 个字符'), { status: 400 });
+      return [key, value];
+    });
+    const save = this.db.prepare('INSERT INTO error_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
+    for (const [key, value] of entries) save.run(key, value);
+    for (const [key, value] of entries) this.errorMessages.set(key, value);
+    return this.listErrorMessages();
+  }
+
+  resetErrorMessages() {
+    this.db.exec('DELETE FROM error_settings');
+    this.errorMessages = new Map(Object.entries(defaultErrorMessages));
+    return this.listErrorMessages();
   }
 
   addUpstreamKey(label, secret, baseUrl = this.defaultUpstreamBaseUrl, useProxyCache = false, tier = null) {

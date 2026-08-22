@@ -117,6 +117,36 @@ export class AdminHandler {
     return { ok: true };
   }
 
+  async testModel(model, sourceUrl) {
+    if (!model || !sourceUrl) throw Object.assign(new Error('模型或 API 地址不能为空'), { status: 400 });
+    const signal = AbortSignal.timeout(Math.min(this.config.responseHeaderTimeoutMs, 30_000));
+    let lease;
+    try {
+      lease = await this.pool.acquire(model, new Set(), signal, sourceUrl);
+      const response = await fetch(`${lease.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${lease.secret}`, accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: '请只回复 OK' }], stream: false, max_tokens: 8 }),
+        signal,
+      });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 300);
+        this.pool.report(lease.id, response.status === 401 || response.status === 403 ? 'invalid' : 'degraded', `HTTP ${response.status}: ${detail}`);
+        throw Object.assign(new Error(`测试失败：HTTP ${response.status}${detail ? `，${detail}` : ''}`), { status: 400 });
+      }
+      const result = await response.json();
+      if (!Array.isArray(result.choices) || !result.choices.length) throw Object.assign(new Error('测试失败：上游没有返回对话结果'), { status: 400 });
+      this.pool.report(lease.id, 'healthy');
+      return { ok: true };
+    } catch (error) {
+      if (lease && !error.status) this.pool.report(lease.id, 'degraded', error.message, 3000);
+      if (error.status) throw error;
+      throw Object.assign(new Error(`测试失败：${error.message}`), { status: 400 });
+    } finally {
+      lease?.release();
+    }
+  }
+
   async api(req, res, url) {
     if (url.pathname === '/admin/api/login' && req.method === 'POST') return this.login(req, res);
     if (!this.authenticated(req)) return send(res, 401, { error: '请先登录' });
@@ -126,25 +156,20 @@ export class AdminHandler {
       res.setHeader('set-cookie', 'admin_session=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0');
       return send(res, 200, { ok: true });
     }
-    const hours = () => Math.min(24 * 30, Math.max(1, Number(url.searchParams.get('hours')) || 24));
-    if (url.pathname === '/admin/api/overview' && req.method === 'GET') {
-      return send(res, 200, {
-        ...await this.usage.overview(hours()),
-        defaultPassword: this.config.adminPassword === '123456',
-        allowAnonymous: this.config.allowAnonymous,
-        hasClientKey: this.store.clientKeyCount() > 0,
-      });
-    }
     if (url.pathname === '/admin/api/keys' && req.method === 'GET') {
       await this.usage.flush();
       return send(res, 200, {
         upstreamKeys: this.pool.snapshot(),
         clientKeys: this.clientKeys(),
         allowAnonymous: this.config.allowAnonymous,
+        defaultPassword: this.config.adminPassword === '123456',
       });
     }
     if (url.pathname === '/admin/api/client-load' && req.method === 'GET') {
       return send(res, 200, { clientInFlight: this.proxy?.clientConcurrencySnapshot?.() || {} });
+    }
+    if (url.pathname === '/admin/api/error-messages' && req.method === 'GET') {
+      return send(res, 200, { errorMessages: this.store.listErrorMessages() });
     }
     if (url.pathname === '/admin/api/models' && req.method === 'GET') {
       return send(res, 200, { models: this.store.listModels(), modelSyncError: this.modelSync.lastError });
@@ -157,18 +182,6 @@ export class AdminHandler {
     }
     if (url.pathname === '/admin/api/cache' && req.method === 'GET') {
       return send(res, 200, { cache: await this.ledger.stats() });
-    }
-    if (url.pathname === '/admin/api/summary' && req.method === 'GET') {
-      return send(res, 200, {
-        ...await this.usage.summary(hours()),
-        upstreamKeys: this.pool.snapshot(),
-        clientKeys: this.clientKeys(),
-        models: this.store.listModels(),
-        cache: await this.ledger.stats(),
-        modelSyncError: this.modelSync.lastError,
-        defaultPassword: this.config.adminPassword === '123456',
-        allowAnonymous: this.config.allowAnonymous,
-      });
     }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);
@@ -223,6 +236,10 @@ export class AdminHandler {
     if (url.pathname === '/admin/api/models/sync' && req.method === 'POST') {
       return send(res, 200, { ok: true, count: await this.modelSync.sync() });
     }
+    if (url.pathname === '/admin/api/models/test' && req.method === 'POST') {
+      const body = await json(req);
+      return send(res, 200, await this.testModel(String(body.model || ''), String(body.sourceUrl || '')));
+    }
     if (url.pathname === '/admin/api/cache' && req.method === 'DELETE') {
       await this.ledger.clear();
       return send(res, 200, { ok: true });
@@ -234,6 +251,13 @@ export class AdminHandler {
     if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {
       await this.usage.clear();
       return send(res, 200, { ok: true });
+    }
+    if (url.pathname === '/admin/api/error-messages' && req.method === 'PATCH') {
+      const body = await json(req);
+      return send(res, 200, { errorMessages: this.store.setErrorMessages(body.messages) });
+    }
+    if (url.pathname === '/admin/api/error-messages' && req.method === 'DELETE') {
+      return send(res, 200, { errorMessages: this.store.resetErrorMessages() });
     }
     return send(res, 404, { error: '接口不存在' });
   }

@@ -3,7 +3,6 @@ const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&':
 const num = (value) => new Intl.NumberFormat('zh-CN', { notation: Number(value) >= 1_000_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(Number(value) || 0);
 const tokenM = (value) => `${((Number(value) || 0) / 1_000_000).toFixed(1)} M`;
 const exactTokens = (value) => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
-const seconds = (value) => `${((Number(value) || 0) / 1000).toFixed(1)} s`;
 const bytes = (value) => {
   let size = Number(value) || 0;
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -12,8 +11,8 @@ const bytes = (value) => {
   return `${size.toFixed(index ? 1 : 0)} ${units[index]}`;
 };
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
-let state = { totals: {}, recent: [], upstreamKeys: [], clientKeys: [], models: [], cache: {} };
-let currentPage = 'overview';
+let state = { upstreamKeys: [], clientKeys: [], models: [], cache: {}, errorMessages: [] };
+let currentPage = 'keys';
 const loading = new Map();
 
 function toast(message) {
@@ -54,28 +53,6 @@ function badge(status) {
   return `<span class="badge ${item[1]}">${item[0]}</span>`;
 }
 
-function renderOverview() {
-  const totals = state.totals;
-  const hitRate = Number(totals.prompt_tokens) ? Number(totals.cached_tokens) / Number(totals.prompt_tokens) * 100 : 0;
-  const successRate = Number(totals.requests) ? Number(totals.successes) / Number(totals.requests) * 100 : 0;
-  $('#metrics').innerHTML = [
-    ['REQUESTS', num(totals.requests), `成功率 ${successRate.toFixed(1)}%`],
-    ['INPUT TOKENS', tokenM(totals.prompt_tokens), '上游真实输入'],
-    ['CACHED TOKENS', tokenM(totals.cached_tokens), `缓存命中率 ${hitRate.toFixed(1)}%`],
-    ['OUTPUT TOKENS', tokenM(totals.completion_tokens), '上游真实输出'],
-    ['P95 LATENCY', seconds(totals.p95_latency_ms), '95% 请求不超过此耗时'],
-  ].map(([label, value, note]) => `<div class="metric"><p class="eyebrow">${label}</p><strong>${value}</strong><span>${note}</span></div>`).join('');
-
-  $('#recent-body').innerHTML = state.recent.length ? state.recent.map((row) => `<tr>
-    <td>${time(row.created_at)}</td><td>${esc(row.key_label)}</td><td class="model" title="${esc(row.model)}">${esc(row.model)}</td>
-    <td>${exactTokens(row.prompt_tokens)} / ${exactTokens(row.completion_tokens)}</td><td>${exactTokens(row.cached_tokens)}</td>
-    <td><span class="badge ${row.status >= 200 && row.status < 300 ? 'good' : 'bad'}">${row.status}</span></td><td>${seconds(row.latency_ms)}</td>
-  </tr>`).join('') : '<tr><td class="empty" colspan="7">还没有请求记录</td></tr>';
-
-  $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
-  $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.hasClientKey);
-}
-
 function renderKeys() {
   $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
@@ -87,12 +64,13 @@ function renderKeys() {
   $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td><code>•••• ${esc(key.last4)}</code></td><td title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
     <td><div class="rate-control"><input data-client-rate type="number" min="0" max="1000" value="${Number(key.output_tps) || 0}" aria-label="${esc(key.label)} 输出 token 每秒"><span>token/s</span><button data-action="save-client-rate" data-id="${key.id}">保存</button></div></td>
-    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[5, 10, 15, 20, 25, 30, 35, 40].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
+    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[3, 5, 10, 15, 20, 25, 30, 35, 40].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
     <td><span class="badge ${key.enabled ? 'good' : 'warn'}" data-client-load="${key.id}" data-enabled="${Boolean(key.enabled)}">${key.enabled ? `${Number(key.in_flight) || 0} 并发` : `暂停 · ${Number(key.in_flight) || 0} 并发`}</span></td>
     <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-client" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未生成下游访问密钥</td></tr>';
 
   $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.clientKeys.some((key) => key.enabled));
+  $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
 }
 
 function renderCache() {
@@ -111,11 +89,11 @@ function renderModelMeta() {
 }
 
 function render(page = currentPage) {
-  if (page === 'overview') renderOverview();
-  else if (page === 'keys') renderKeys();
+  if (page === 'keys') renderKeys();
   else if (page === 'models') { renderModels(); renderModelMeta(); }
   else if (page === 'usage') renderUsage();
   else if (page === 'cache') renderCache();
+  else if (page === 'settings') renderSettings();
 }
 
 function renderModels() {
@@ -126,19 +104,30 @@ function renderModels() {
   }
   $('#model-grid').innerHTML = groups.size ? [...groups].map(([source, models]) => `<section class="model-group">
     <div class="model-group-head"><div><strong>${esc(models[0].source_label)}</strong><code title="${esc(source)}">${esc(source)}</code></div><span>${models.length} 个模型 · ${models[0].key_count} 个可用密钥</span></div>
-    <div class="model-grid">${models.map((item) => `<div class="model-item"><strong title="${esc(item.name)}">${esc(item.name)}</strong><span>${esc(item.details?.family || item.details?.owner || 'OpenAI 兼容')} · ${item.modified_at ? new Date(item.modified_at).toLocaleDateString('zh-CN') : '自动同步'}</span></div>`).join('')}</div>
+    <div class="model-grid">${models.map((item) => `<div class="model-item"><div class="model-item-head"><strong title="${esc(item.name)}">${esc(item.name)}</strong><button data-action="test-model" data-model="${esc(item.name)}" data-source-url="${esc(item.source_url)}">测试</button></div><span>${esc(item.details?.family || item.details?.owner || 'OpenAI 兼容')} · ${item.modified_at ? new Date(item.modified_at).toLocaleDateString('zh-CN') : '自动同步'}</span></div>`).join('')}</div>
   </section>`).join('') : '<div class="empty">还没有同步模型</div>';
 }
 
 function renderUsage() {
   const percent = (value) => Math.min(100, Math.max(0, Number(value) * 100));
   const tone = (value) => value >= 90 ? 'bad' : value >= 70 ? 'warn' : '';
+  const exhaustion = (period) => {
+    if (percent(period?.usage) >= 100) return '已耗尽';
+    if (period?.exhaustionMs == null) return '暂无法估算';
+    const totalMinutes = Math.max(1, Math.ceil(Number(period.exhaustionMs) / 60_000));
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor(totalMinutes % 1440 / 60);
+    const minutes = totalMinutes % 60;
+    if (days) return `约 ${days}天${hours ? `${hours}小时` : ''}${minutes ? `${minutes}分` : ''}后耗尽`;
+    if (hours) return `约 ${hours}小时${minutes ? `${minutes}分` : ''}后耗尽`;
+    return `约 ${minutes || 1}分后耗尽`;
+  };
   const meter = (label, period) => {
     const used = percent(period?.usage);
     const calls = (period?.models || []).reduce((sum, item) => sum + Number(item.requestCount || 0), 0);
     return `<div class="quota-meter"><div class="quota-meter-label"><span>${label}</span><strong>${used.toFixed(1)}%</strong></div>
       <progress class="quota-progress ${tone(used)}" max="100" value="${used}" aria-label="${label}已用 ${used.toFixed(1)}%"></progress>
-      <div class="quota-meter-note"><span>剩余 ${(100 - used).toFixed(1)}%</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
+      <div class="quota-meter-note"><span>${exhaustion(period)}</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
   };
   const modelList = (label, items = []) => `<section class="quota-model-list"><h4>${label}</h4>${items.length ? [...items]
     .sort((a, b) => Number(b.requestCount) - Number(a.requestCount))
@@ -156,14 +145,22 @@ function renderUsage() {
   }).join('') : '<div class="empty">还没有添加 Ollama Cloud 密钥</div>';
 }
 
+function renderSettings() {
+  $('#error-settings-list').innerHTML = state.errorMessages.map((item) => `<label class="error-setting">
+    <span class="error-setting-head"><strong>${esc(item.label)}</strong><code>HTTP ${item.status}</code></span>
+    <textarea name="${esc(item.key)}" maxlength="500" rows="3" required>${esc(item.value)}</textarea>
+    <small>${item.key === 'model_not_found' ? '可使用 <code>{model}</code> 显示实际模型名' : `系统键：${esc(item.key)}`}</small>
+  </label>`).join('');
+}
+
 async function load(page = currentPage, force = false) {
   if (loading.has(page)) return loading.get(page);
   const endpoint = {
-    overview: `/admin/api/overview?hours=${$('#range').value}`,
     keys: '/admin/api/keys',
     models: '/admin/api/models',
     usage: `/admin/api/usage${force ? '?refresh=1' : ''}`,
     cache: '/admin/api/cache',
+    settings: '/admin/api/error-messages',
   }[page];
   const job = api(endpoint).then((data) => {
     Object.assign(state, data);
@@ -182,7 +179,7 @@ $('#login-form').addEventListener('submit', async (event) => {
   try {
     await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
     $('#password').value = '';
-    await load('overview');
+    await load('keys');
   } catch (error) { $('#login-error').textContent = error.message; }
 });
 
@@ -193,9 +190,8 @@ $('#nav').addEventListener('click', (event) => {
   document.querySelectorAll('#nav button').forEach((item) => item.classList.toggle('active', item === button));
   document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
   $(`#page-${currentPage}`).classList.remove('hidden');
-  $('#page-title').textContent = { overview: '运行总览', keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存账本' }[currentPage];
-  $('#range').classList.toggle('hidden', currentPage === 'usage');
-  $('#clear-usage').classList.toggle('hidden', currentPage === 'usage');
+  $('#page-title').textContent = { keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存账本', settings: '错误提示设置' }[currentPage];
+  $('#clear-usage').classList.toggle('hidden', currentPage === 'usage' || currentPage === 'settings');
   load(currentPage).catch(() => {});
 });
 
@@ -238,6 +234,11 @@ document.addEventListener('click', async (event) => {
   if (action.startsWith('delete') && !confirm('确定删除吗？此操作不能撤销。')) return;
   button.disabled = true;
   try {
+    if (action === 'test-model') {
+      await api('/admin/api/models/test', { method: 'POST', body: JSON.stringify({ model: button.dataset.model, sourceUrl: button.dataset.sourceUrl }) });
+      toast(`${button.dataset.model} 回复正常`);
+      return;
+    }
     const upstream = action.includes('upstream');
     const base = upstream ? '/admin/api/upstream-keys' : '/admin/api/client-keys';
     if (action === 'toggle-upstream-cache') {
@@ -278,13 +279,38 @@ document.addEventListener('click', async (event) => {
 });
 
 $('#sync-models').addEventListener('click', async () => { try { const result = await api('/admin/api/models/sync', { method: 'POST' }); toast(`已同步 ${result.count} 个模型`); await load('models'); } catch (error) { toast(error.message); } });
+$('#error-settings-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  if (button) button.disabled = true;
+  try {
+    const messages = Object.fromEntries(new FormData(event.currentTarget));
+    const result = await api('/admin/api/error-messages', { method: 'PATCH', body: JSON.stringify({ messages }) });
+    state.errorMessages = result.errorMessages;
+    renderSettings();
+    toast('错误提示已保存');
+  } catch (error) { toast(error.message); }
+  finally { if (button) button.disabled = false; }
+});
+$('#reset-error-messages').addEventListener('click', async (event) => {
+  if (!confirm('确定恢复全部默认错误提示吗？')) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await api('/admin/api/error-messages', { method: 'DELETE' });
+    state.errorMessages = result.errorMessages;
+    renderSettings();
+    toast('已恢复默认错误提示');
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
+});
 $('#clear-usage').addEventListener('click', async (event) => {
   if (!confirm('确定清空全部统计数据吗？密钥和缓存账本不会被删除。')) return;
   const button = event.currentTarget;
   button.disabled = true;
   try {
     await api('/admin/api/usage', { method: 'DELETE' });
-    if (currentPage === 'overview' || currentPage === 'usage' || currentPage === 'keys') await load(currentPage);
+    if (currentPage === 'usage' || currentPage === 'keys') await load(currentPage);
     toast('统计数据已清空');
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 });
@@ -302,7 +328,6 @@ $('#rp-cache-toggle').addEventListener('change', async (event) => {
 });
 $('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀和 RP 分块吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load('cache'); } });
 $('#refresh').addEventListener('click', () => load(currentPage, true));
-$('#range').addEventListener('change', () => { if (currentPage === 'overview') load(currentPage); });
 $('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });
 $('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });
 $('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
@@ -321,8 +346,8 @@ async function refreshClientLoad() {
   finally { clientLoadPending = false; }
 }
 
-load('overview');
+load('keys');
 setInterval(refreshClientLoad, 2_000);
 setInterval(() => {
-  if (!$('#app-view').classList.contains('hidden') && (currentPage === 'overview' || currentPage === 'usage')) load(currentPage);
+  if (!$('#app-view').classList.contains('hidden') && currentPage === 'usage') load(currentPage);
 }, 30_000);

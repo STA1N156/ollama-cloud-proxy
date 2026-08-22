@@ -5,6 +5,22 @@ import { Store } from '../src/store.js';
 import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
 
+test('错误提示可修改、持久化并一键恢复默认', (t) => {
+  const config = tempConfig();
+  let store = new Store(config);
+  t.after(() => { store.close(); config.cleanup(); });
+  assert.equal(store.errorMessage('api_unavailable'), 'API 暂时不可用');
+  store.setErrorMessages({ api_unavailable: '请稍后再试', model_not_found: '找不到 {model}' });
+  assert.equal(store.errorMessage('model_not_found', { model: 'demo' }), '找不到 demo');
+  store.close();
+  store = new Store(config);
+  assert.equal(store.errorMessage('api_unavailable'), '请稍后再试');
+  assert.throws(() => store.setErrorMessages({ unknown: '错误' }), /未知错误提示/);
+  assert.throws(() => store.setErrorMessages({ api_unavailable: '' }), /不能为空/);
+  store.resetErrorMessages();
+  assert.equal(store.errorMessage('api_unavailable'), 'API 暂时不可用');
+});
+
 test('旧白名单2自动合并到统一白名单', (t) => {
   const config = tempConfig();
   const legacy = new DatabaseSync(config.databasePath);
@@ -60,6 +76,8 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
   store.setClientAllowedOrigin(id, 'codex-router');
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
+  store.setClientAllowedOrigin(id, 'limit:3');
+  assert.equal(store.getClientAccess('ocp_copy_me').concurrencyLimit, 3);
   store.setClientAllowedOrigin(id, 'limit:35');
   assert.deepEqual(store.getClientAccess('ocp_copy_me'), { id, outputTps: 12, allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 35 });
   assert.throws(() => store.setClientAllowedOrigin(id, 'limit:50'), /不支持的访问控制模式/);
@@ -75,20 +93,10 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
     status: 200,
     latencyMs: 20,
   });
-  const firstSummary = await usage.summary(1);
+  const firstGroups = await usage.groups(1);
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 12);
-  assert.equal(firstSummary.totals.p95_latency_ms, 20);
-  assert.equal(Number(firstSummary.byKeyModel[0].key_id), upstreamId);
-  for (let index = 1; index < 20; index += 1) {
-    usage.record({
-      clientKeyId: id,
-      model: 'model-a',
-      endpoint: '/v1/chat/completions',
-      status: 200,
-      latencyMs: index * 1000,
-    });
-  }
-  assert.equal((await usage.summary(1)).totals.p95_latency_ms, 18_000);
+  assert.equal(Number(firstGroups.byKeyModel[0].key_id), upstreamId);
+  assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_events'").get(), undefined);
 
   await usage.clear();
   assert.equal(Number(store.listClientKeys().find((key) => key.id === id).total_tokens), 0);

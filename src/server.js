@@ -41,12 +41,12 @@ const server = http.createServer(async (req, res) => {
       return res.end(body);
     }
     res.writeHead(404, { 'content-type': 'application/json' });
-    res.end('{"error":{"message":"Not found","type":"invalid_request_error"}}');
+    res.end(JSON.stringify({ error: { message: store.errorMessage('route_not_found'), type: 'invalid_request_error' } }));
   } catch (error) {
     console.error(error);
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'application/json' });
-      res.end('{"error":{"message":"Internal server error","type":"proxy_error"}}');
+      res.end(JSON.stringify({ error: { message: store.errorMessage('internal_error'), type: 'proxy_error' } }));
     } else res.destroy(error);
   }
 });

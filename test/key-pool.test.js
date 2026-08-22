@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { KeyPool } from '../src/key-pool.js';
+import { estimateQuotaExhaustion, KeyPool } from '../src/key-pool.js';
 import { Store } from '../src/store.js';
 import { tempConfig } from '../test-support/helpers.js';
+
+test('根据最近多次额度走势估算耗尽时间', () => {
+  assert.equal(estimateQuotaExhaustion([
+    { at: 0, usage: 0.5 }, { at: 60_000, usage: 0.55 }, { at: 120_000, usage: 0.6 },
+  ]), 480_000);
+  assert.equal(estimateQuotaExhaustion([{ at: 0, usage: 0.5 }, { at: 60_000, usage: 0.5 }, { at: 120_000, usage: 0.5 }]), null);
+  assert.equal(estimateQuotaExhaustion([
+    { at: 0, usage: 0.9 }, { at: 60_000, usage: 0.1 }, { at: 120_000, usage: 0.2 },
+  ]), null);
+});
 
 test('同一模型在健康密钥间公平轮询', async (t) => {
   const config = tempConfig();
@@ -200,5 +210,6 @@ test('只把模型请求分配给提供该模型的 API 通道', async (t) => {
     shared.push(lease.label);
     lease.release();
   }
+  await assert.rejects(pool.acquire('missing-model'), /API 暂时不可用/);
   assert.deepEqual(shared, ['Ollama', 'External']);
 });
