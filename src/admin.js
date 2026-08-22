@@ -143,6 +143,9 @@ export class AdminHandler {
         allowAnonymous: this.config.allowAnonymous,
       });
     }
+    if (url.pathname === '/admin/api/client-load' && req.method === 'GET') {
+      return send(res, 200, { clientInFlight: this.proxy?.clientConcurrencySnapshot?.() || {} });
+    }
     if (url.pathname === '/admin/api/models' && req.method === 'GET') {
       return send(res, 200, { models: this.store.listModels(), modelSyncError: this.modelSync.lastError });
     }

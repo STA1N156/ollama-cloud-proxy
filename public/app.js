@@ -87,8 +87,8 @@ function renderKeys() {
   $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td><code>•••• ${esc(key.last4)}</code></td><td title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
     <td><div class="rate-control"><input data-client-rate type="number" min="0" max="1000" value="${Number(key.output_tps) || 0}" aria-label="${esc(key.label)} 输出 token 每秒"><span>token/s</span><button data-action="save-client-rate" data-id="${key.id}">保存</button></div></td>
-    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[5, 10, 20, 30, 40, 50, 60].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
-    <td><span class="badge ${key.enabled ? 'good' : 'warn'}">${key.enabled ? `${Number(key.in_flight) || 0} / ${key.concurrency_limit || '∞'}` : `暂停 · ${Number(key.in_flight) || 0}`}</span></td>
+    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[5, 10, 15, 20, 25, 30, 35, 40].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
+    <td><span class="badge ${key.enabled ? 'good' : 'warn'}" data-client-load="${key.id}" data-enabled="${Boolean(key.enabled)}">${key.enabled ? `${Number(key.in_flight) || 0} 并发` : `暂停 · ${Number(key.in_flight) || 0} 并发`}</span></td>
     <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-client" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未生成下游访问密钥</td></tr>';
 
@@ -307,7 +307,22 @@ $('#logout').addEventListener('click', async () => { await api('/admin/api/logou
 $('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });
 $('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
 
+let clientLoadPending = false;
+async function refreshClientLoad() {
+  if (clientLoadPending || currentPage !== 'keys' || $('#app-view').classList.contains('hidden')) return;
+  clientLoadPending = true;
+  try {
+    const { clientInFlight = {} } = await api('/admin/api/client-load');
+    document.querySelectorAll('[data-client-load]').forEach((item) => {
+      const count = Number(clientInFlight[item.dataset.clientLoad]) || 0;
+      item.textContent = item.dataset.enabled === 'true' ? `${count} 并发` : `暂停 · ${count} 并发`;
+    });
+  } catch { /* 登录状态由 api() 统一处理 */ }
+  finally { clientLoadPending = false; }
+}
+
 load('overview');
+setInterval(refreshClientLoad, 2_000);
 setInterval(() => {
   if (!$('#app-view').classList.contains('hidden') && (currentPage === 'overview' || currentPage === 'usage')) load(currentPage);
 }, 30_000);

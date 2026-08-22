@@ -15,7 +15,7 @@ const clientAccessMode = (value) => {
   if (['https://sta1n156.github.io', 'codex-router'].includes(mode)) {
     return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 0 };
   }
-  const limit = Number(mode.match(/^limit:(5|10|20|30|40|50|60)$/)?.[1]);
+  const limit = Number(mode.match(/^limit:(5|10|15|20|25|30|35|40)$/)?.[1]);
   if (!limit) throw new Error('不支持的访问控制模式');
   return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: limit };
 };
@@ -183,6 +183,7 @@ export class Store {
       this.db.exec('ALTER TABLE client_keys ADD COLUMN concurrency_limit INTEGER NOT NULL DEFAULT 0');
     }
     this.db.exec("UPDATE client_keys SET allowed_origin='https://sta1n156.github.io' WHERE allowed_origin='codex-router'");
+    this.db.exec('UPDATE client_keys SET concurrency_limit=40 WHERE concurrency_limit IN (50, 60)');
     const upstreamColumns = this.db.prepare('PRAGMA table_info(upstream_keys)').all();
     if (!upstreamColumns.some((column) => column.name === 'base_url')) {
       this.db.exec("ALTER TABLE upstream_keys ADD COLUMN base_url TEXT NOT NULL DEFAULT ''");

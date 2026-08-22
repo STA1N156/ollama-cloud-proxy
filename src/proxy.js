@@ -266,9 +266,9 @@ export class ProxyHandler {
 
   acquireClientSlot(access) {
     const limit = Number(access.concurrencyLimit) || 0;
-    if (!limit) return undefined;
+    if (access.id == null) return undefined;
     const current = this.clientInFlight.get(access.id) || 0;
-    if (current >= limit) return null;
+    if (limit && current >= limit) return null;
     this.clientInFlight.set(access.id, current + 1);
     let released = false;
     return () => {
@@ -282,6 +282,10 @@ export class ProxyHandler {
 
   clientConcurrency(id) {
     return this.clientInFlight.get(Number(id)) || 0;
+  }
+
+  clientConcurrencySnapshot() {
+    return Object.fromEntries(this.clientInFlight);
   }
 
   async handle(req, res) {

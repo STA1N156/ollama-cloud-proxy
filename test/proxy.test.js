@@ -202,6 +202,15 @@ test('白名单并发模式超额时立即返回指定503，完成后释放名�
   assert.equal((await call()).status, 200);
 });
 
+test('未限制并发的下游密钥仍统计实时并发', () => {
+  const proxy = new ProxyHandler({}, null, null, null);
+  const release = proxy.acquireClientSlot({ id: 7, concurrencyLimit: 0 });
+  assert.equal(proxy.clientConcurrency(7), 1);
+  assert.deepEqual(proxy.clientConcurrencySnapshot(), { 7: 1 });
+  release();
+  assert.equal(proxy.clientConcurrency(7), 0);
+});
+
 test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 usage', async (t) => {
   const received = [];
   const upstreamServer = http.createServer(async (req, res) => {
