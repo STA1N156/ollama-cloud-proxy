@@ -79,36 +79,45 @@ export class KeyPool {
     const keys = this.sortedKeys;
     const eligible = keys.filter((key) => this.eligible(key, model, excluded, sourceUrl));
     if (!eligible.length) return null;
+    const route = this.stickyEnabled && stickyKey ? this.stickyRoutes.get(stickyKey) : null;
+    const bound = route && route.expiresAt > Date.now()
+      ? this.keys.get(route.keyId)
+      : null;
+    const sticky = bound && bound.stickyGeneration === route.generation && this.eligible(bound, model, excluded, sourceUrl)
+      ? bound
+      : null;
+    if (route && !sticky) this.stickyRoutes.delete(stickyKey);
+    if (sticky && sticky.inFlight < this.concurrencyLimit(sticky)) {
+      this.rememberSticky(stickyKey, sticky);
+      return this.lease(sticky);
+    }
+
     const ready = eligible.filter((key) => key.inFlight < this.concurrencyLimit(key));
     const available = this.quotaBalanced(ready);
     if (!available.length) return undefined;
 
-    const route = this.stickyEnabled && stickyKey ? this.stickyRoutes.get(stickyKey) : null;
-    const sticky = route && route.expiresAt > Date.now()
-      ? available.find((key) => key.id === route.keyId && key.stickyGeneration === route.generation)
-      : null;
-    if (route && !sticky) this.stickyRoutes.delete(stickyKey);
-
-    let selected = sticky;
-    if (!selected) {
-      const scheduleKey = `${sourceUrl || '*'}\0${model}`;
-      const schedule = this.schedules.get(scheduleKey) || new Map();
-      this.schedules.set(scheduleKey, schedule);
-      let best = -Infinity;
-      let totalWeight = 0;
-      for (const key of available) {
-        const weight = key.tier === 'pro' ? 1 : 5;
-        const score = (schedule.get(key.id) || 0) + weight;
-        schedule.set(key.id, score);
-        totalWeight += weight;
-        if (score > best) {
-          selected = key;
-          best = score;
-        }
+    const scheduleKey = `${sourceUrl || '*'}\0${model}`;
+    const schedule = this.schedules.get(scheduleKey) || new Map();
+    this.schedules.set(scheduleKey, schedule);
+    let selected;
+    let best = -Infinity;
+    let totalWeight = 0;
+    for (const key of available) {
+      const weight = key.tier === 'pro' ? 1 : 5;
+      const score = (schedule.get(key.id) || 0) + weight;
+      schedule.set(key.id, score);
+      totalWeight += weight;
+      if (score > best) {
+        selected = key;
+        best = score;
       }
-      schedule.set(selected.id, best - totalWeight);
     }
-    if (this.stickyEnabled && stickyKey) this.rememberSticky(stickyKey, selected);
+    schedule.set(selected.id, best - totalWeight);
+    if (this.stickyEnabled && stickyKey && !sticky) this.rememberSticky(stickyKey, selected);
+    return this.lease(selected);
+  }
+
+  lease(selected) {
     selected.inFlight += 1;
     let released = false;
     return {
