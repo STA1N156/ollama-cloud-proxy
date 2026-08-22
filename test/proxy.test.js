@@ -485,6 +485,7 @@ test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
     body: JSON.stringify({ model: 'model-a', messages: [{ role: 'user', content: 'x' }] }),
   });
   assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.message, 'API 暂时不可用');
   assert.equal(calls.length, 10);
   assert.equal(new Set(calls).size, 10);
   assert.equal(pool.snapshot().filter((key) => key.status === 'cooldown').length, 10);

@@ -424,7 +424,7 @@ export class ProxyHandler {
         const invalid = upstream.status === 401 || upstream.status === 403;
         const cooldown = upstream.status === 429 ? retryAfterMs(upstream) : 3000;
         this.pool.report(lease.id, invalid ? 'invalid' : upstream.status === 429 ? 'cooldown' : 'degraded', `HTTP ${upstream.status}: ${errorText}`, invalid ? 0 : cooldown);
-        lastError = new Error(`Ollama Cloud 返回 HTTP ${upstream.status}`);
+        lastError = new Error('API 暂时不可用');
         lease.release();
         lease = null;
         upstream = null;
@@ -444,7 +444,7 @@ export class ProxyHandler {
 
     if (!upstream || !lease) {
       this.usage.record({ clientKeyId, model, endpoint: url.pathname, status: 502, latencyMs: Date.now() - started, stream, error: lastError?.message });
-      return jsonError(res, 502, lastError?.message || '上游 API 暂时不可用');
+      return jsonError(res, 502, lastError?.message || 'API 暂时不可用');
     }
 
     const cacheable = supportsLocalCache && lease.useProxyCache;
