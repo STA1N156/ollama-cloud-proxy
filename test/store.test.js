@@ -50,7 +50,7 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
 
   const id = store.addClientKey('新密钥', 'ocp_copy_me', 10);
   assert.equal(store.getClientKeyToken(id), 'ocp_copy_me');
-  assert.deepEqual(store.getClientAccess('ocp_copy_me'), { id, outputTps: 10, allowedOrigin: '' });
+  assert.deepEqual(store.getClientAccess('ocp_copy_me'), { id, outputTps: 10, allowedOrigin: '', concurrencyLimit: 0 });
   store.setClientOutputTps(id, 12);
   store.setClientAllowedOrigin(id, 'https://sta1n156.github.io');
   store.addClientKey('环境变量密钥', 'ocp_copy_me');
@@ -58,7 +58,9 @@ test('旧数据库自动迁移，新下游密钥可复制并统计累计用量',
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
   store.setClientAllowedOrigin(id, 'codex-router');
   assert.equal(store.getClientAccess('ocp_copy_me').allowedOrigin, 'https://sta1n156.github.io');
-  assert.throws(() => store.setClientAllowedOrigin(id, 'https://example.com'), /不支持的白名单/);
+  store.setClientAllowedOrigin(id, 'limit:60');
+  assert.deepEqual(store.getClientAccess('ocp_copy_me'), { id, outputTps: 12, allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 60 });
+  assert.throws(() => store.setClientAllowedOrigin(id, 'limit:6'), /不支持的访问控制模式/);
   usage.record({
     upstreamKeyId: upstreamId,
     clientKeyId: id,
@@ -141,7 +143,7 @@ test('下游鉴权关闭数据库后仍从内存读取', () => {
   const id = store.addClientKey('内存密钥', 'memory-client', 15, 'https://sta1n156.github.io');
   store.close();
   assert.deepEqual(store.getClientAccess('memory-client'), {
-    id, outputTps: 15, allowedOrigin: 'https://sta1n156.github.io',
+    id, outputTps: 15, allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 0,
   });
   assert.equal(store.clientKeyCount(), 1);
   config.cleanup();

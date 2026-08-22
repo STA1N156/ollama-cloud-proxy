@@ -234,6 +234,7 @@ export class ProxyHandler {
     this.pool = pool;
     this.ledger = ledger;
     this.usage = usage;
+    this.clientInFlight = new Map();
   }
 
   authenticate(req) {
@@ -243,7 +244,7 @@ export class ProxyHandler {
       if (access) return access;
       throw Object.assign(new Error('下游访问密钥无效'), { status: 401 });
     }
-    if (this.config.allowAnonymous) return { id: null, outputTps: 0, allowedOrigin: '' };
+    if (this.config.allowAnonymous) return { id: null, outputTps: 0, allowedOrigin: '', concurrencyLimit: 0 };
     if (!this.store.clientKeyCount()) throw Object.assign(new Error('尚未配置下游访问密钥，请先登录 /admin 创建'), { status: 503 });
     throw Object.assign(new Error('缺少下游访问密钥'), { status: 401 });
   }
@@ -261,6 +262,26 @@ export class ProxyHandler {
     const body = JSON.stringify(selected ? convert(selected) : { object: 'list', data: models.map(convert) });
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
+  }
+
+  acquireClientSlot(access) {
+    const limit = Number(access.concurrencyLimit) || 0;
+    if (!limit) return undefined;
+    const current = this.clientInFlight.get(access.id) || 0;
+    if (current >= limit) return null;
+    this.clientInFlight.set(access.id, current + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.clientInFlight.get(access.id) || 1) - 1;
+      if (remaining) this.clientInFlight.set(access.id, remaining);
+      else this.clientInFlight.delete(access.id);
+    };
+  }
+
+  clientConcurrency(id) {
+    return this.clientInFlight.get(Number(id)) || 0;
   }
 
   async handle(req, res) {
@@ -295,6 +316,15 @@ export class ProxyHandler {
     if (req.method === 'GET' && url.pathname === '/v1/models') return this.models(res);
     if (req.method === 'GET' && url.pathname.startsWith('/v1/models/')) return this.models(res, decodeURIComponent(url.pathname.slice(11)));
     if (req.method !== 'POST' || !url.pathname.startsWith('/v1/')) return jsonError(res, 404, '接口不存在', 'invalid_request_error');
+
+    const releaseClientSlot = this.acquireClientSlot(clientAccess);
+    if (releaseClientSlot === null) {
+      return jsonError(res, 503, '当前公益模型负载较高，暂时超出配额，请切换模型或稍后重试', 'server_error');
+    }
+    if (releaseClientSlot) {
+      res.once('finish', releaseClientSlot);
+      res.once('close', releaseClientSlot);
+    }
 
     let raw;
     let request;

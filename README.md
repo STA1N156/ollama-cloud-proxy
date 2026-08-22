@@ -124,6 +124,8 @@ Token 减速器设置在管理后台的“下游访问密钥”列表中，对 O
 - `Origin` 是 `https://sta1n156.github.io`、`https://api.sta1n.site` 或 `https://cdn.sta1n.cn`
 - `User-Agent` 符合 `codex-router/xxxxx`
 
+也可以选择“白名单 + 5/10/20/30/40/50/60 并发”。请求仍需先通过上述白名单，同一个下游密钥超过所选并发数时会立即返回 HTTP 503，不会进入排队。
+
 经过 New API 中转时，需要在对应渠道的“请求头覆盖”中配置：
 
 ```json

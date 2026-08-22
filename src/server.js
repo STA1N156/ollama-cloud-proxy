@@ -19,7 +19,7 @@ const ledger = new CacheLedger(store, config.cacheTtlMs);
 const modelSync = new ModelSync(config, store, pool);
 const quotaSync = new QuotaSync(config, store, pool);
 const proxy = new ProxyHandler(config, store, pool, ledger, usage);
-const admin = new AdminHandler(config, store, pool, ledger, usage, modelSync, quotaSync);
+const admin = new AdminHandler(config, store, pool, ledger, usage, modelSync, quotaSync, proxy);
 
 const server = http.createServer(async (req, res) => {
   try {

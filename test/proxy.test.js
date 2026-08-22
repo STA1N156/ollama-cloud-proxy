@@ -155,6 +155,53 @@ test('零限速正文不等待缓存线程，最终 usage 仍注入命中 token'
   assert.match(writes.join(''), /"cached_tokens":50/);
 });
 
+test('白名单并发模式超额时立即返回指定503，完成后释放名额', async (t) => {
+  let received = 0;
+  const upstreamServer = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* 读取请求体 */ }
+    received += 1;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const body = JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+    res.end(body);
+  });
+  const upstreamUrl = await listen(upstreamServer);
+  const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1` });
+  const store = new Store(config);
+  store.addUpstreamKey('upstream', 'upstream-key');
+  const clientId = store.addClientKey('limited', 'limited-key', 0, 'limit:5');
+  const usage = new UsageLedger(store);
+  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
+  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const proxy = new ProxyHandler(config, store, pool, ledger, usage);
+  const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
+  const proxyUrl = await listen(proxyServer);
+  t.after(async () => {
+    await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
+    await Promise.all([ledger.close(), usage.close()]); store.close(); config.cleanup();
+  });
+
+  const call = (origin = 'https://sta1n156.github.io') => fetch(`${proxyUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer limited-key', origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'model-a', messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  const active = Array.from({ length: 5 }, () => call());
+  while (received < 5) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(proxy.clientConcurrency(clientId), 5);
+
+  const rejected = await call();
+  assert.equal(rejected.status, 503);
+  assert.equal((await rejected.json()).error.message, '当前公益模型负载较高，暂时超出配额，请切换模型或稍后重试');
+  assert.equal((await call('https://example.com')).status, 403);
+  assert.ok((await Promise.all(active)).every((response) => response.status === 200));
+  assert.equal(proxy.clientConcurrency(clientId), 0);
+  assert.equal((await call()).status, 200);
+});
+
 test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 usage', async (t) => {
   const received = [];
   const upstreamServer = http.createServer(async (req, res) => {

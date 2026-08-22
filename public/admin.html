@@ -64,8 +64,8 @@
             </div>
             <div class="panel">
               <div class="panel-head"><div><h3>下游访问密钥</h3><p>客户端使用这些密钥访问代理</p></div></div>
-              <form class="inline-form client-form" id="client-form"><input name="label" placeholder="客户或应用名称" required><input name="outputTps" type="number" min="0" max="1000" value="0" placeholder="输出 token/s，0 不限速"><select name="allowedOrigin" aria-label="白名单"><option value="">不启用白名单（默认）</option><option value="https://sta1n156.github.io">白名单（RP-Hub / Codex Router）</option></select><button class="primary">生成密钥</button></form>
-              <div class="table-wrap"><table><thead><tr><th>名称</th><th>密钥</th><th>总用量</th><th>Token 减速器</th><th>白名单</th><th>状态</th><th></th></tr></thead><tbody id="client-body"></tbody></table></div>
+              <form class="inline-form client-form" id="client-form"><input name="label" placeholder="客户或应用名称" required><input name="outputTps" type="number" min="0" max="1000" value="0" placeholder="输出 token/s，0 不限速"><select name="allowedOrigin" aria-label="访问控制"><option value="">不启用白名单（默认）</option><option value="https://sta1n156.github.io">白名单</option><option value="limit:5">白名单 + 5 并发</option><option value="limit:10">白名单 + 10 并发</option><option value="limit:20">白名单 + 20 并发</option><option value="limit:30">白名单 + 30 并发</option><option value="limit:40">白名单 + 40 并发</option><option value="limit:50">白名单 + 50 并发</option><option value="limit:60">白名单 + 60 并发</option></select><button class="primary">生成密钥</button></form>
+              <div class="table-wrap"><table><thead><tr><th>名称</th><th>密钥</th><th>总用量</th><th>Token 减速器</th><th>访问控制</th><th>状态</th><th></th></tr></thead><tbody id="client-body"></tbody></table></div>
             </div>
           </div>
         </section>
@@ -95,6 +95,6 @@
 
   <dialog id="token-dialog"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3>请立即保存</h3><p class="muted">关闭后无法再次查看完整密钥。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">我已保存</button></div></dialog>
   <div class="toast" id="toast"></div>
-  <script type="module" src="/admin/app.js?v=17"></script>
+  <script type="module" src="/admin/app.js?v=19"></script>
 </body>
 </html>

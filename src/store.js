@@ -9,11 +9,15 @@ const upstreamTier = (value) => {
   if (!['max', 'pro'].includes(tier)) throw new Error('Ollama 密钥等级只能是 MAX 或 PRO');
   return tier;
 };
-const clientOrigin = (value) => {
-  const origin = String(value || '').trim();
-  if (!origin) return '';
-  if (!['https://sta1n156.github.io', 'codex-router'].includes(origin)) throw new Error('不支持的白名单');
-  return 'https://sta1n156.github.io';
+const clientAccessMode = (value) => {
+  const mode = String(value || '').trim();
+  if (!mode) return { allowedOrigin: '', concurrencyLimit: 0 };
+  if (['https://sta1n156.github.io', 'codex-router'].includes(mode)) {
+    return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 0 };
+  }
+  const limit = Number(mode.match(/^limit:(5|10|20|30|40|50|60)$/)?.[1]);
+  if (!limit) throw new Error('不支持的访问控制模式');
+  return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: limit };
 };
 export const normalizeBaseUrl = (value, fallback = 'https://ollama.com/v1') => {
   const url = new URL(String(value || fallback).trim());
@@ -62,6 +66,7 @@ export class Store {
         enabled INTEGER NOT NULL DEFAULT 1,
         output_tps INTEGER NOT NULL DEFAULT 0,
         allowed_origin TEXT NOT NULL DEFAULT '',
+        concurrency_limit INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL
       );
 
@@ -173,6 +178,9 @@ export class Store {
     }
     if (!clientColumns.some((column) => column.name === 'allowed_origin')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN allowed_origin TEXT NOT NULL DEFAULT ''");
+    }
+    if (!clientColumns.some((column) => column.name === 'concurrency_limit')) {
+      this.db.exec('ALTER TABLE client_keys ADD COLUMN concurrency_limit INTEGER NOT NULL DEFAULT 0');
     }
     this.db.exec("UPDATE client_keys SET allowed_origin='https://sta1n156.github.io' WHERE allowed_origin='codex-router'");
     const upstreamColumns = this.db.prepare('PRAGMA table_info(upstream_keys)').all();
@@ -294,14 +302,17 @@ export class Store {
   addClientKey(label, token, rate = null, origin = null) {
     const value = token.trim();
     const normalizedRate = outputTps(rate);
-    const normalizedOrigin = origin == null ? null : clientOrigin(origin);
+    const access = origin == null ? null : clientAccessMode(origin);
     const result = this.db.prepare(`
-      INSERT INTO client_keys(label, token_hash, token_secret, last4, output_tps, allowed_origin, created_at)
-      VALUES (?, ?, ?, ?, ?, COALESCE(?, ''), ?)
+      INSERT INTO client_keys(label, token_hash, token_secret, last4, output_tps, allowed_origin, concurrency_limit, created_at)
+      VALUES (?, ?, ?, ?, ?, COALESCE(?, ''), COALESCE(?, 0), ?)
       ON CONFLICT(token_hash) DO UPDATE SET label=excluded.label, token_secret=excluded.token_secret,
-        output_tps=COALESCE(?, client_keys.output_tps), allowed_origin=COALESCE(?, client_keys.allowed_origin), enabled=1
+        output_tps=COALESCE(?, client_keys.output_tps), allowed_origin=COALESCE(?, client_keys.allowed_origin),
+        concurrency_limit=COALESCE(?, client_keys.concurrency_limit), enabled=1
       RETURNING id
-    `).get(label.trim() || `Client ${value.slice(-4)}`, sha256(value), encrypt(value, this.masterKey), value.slice(-4), normalizedRate, normalizedOrigin, now(), rate == null ? null : normalizedRate, normalizedOrigin);
+    `).get(label.trim() || `Client ${value.slice(-4)}`, sha256(value), encrypt(value, this.masterKey), value.slice(-4), normalizedRate,
+      access ? access.allowedOrigin : null, access ? access.concurrencyLimit : null, now(), rate == null ? null : normalizedRate,
+      access ? access.allowedOrigin : null, access ? access.concurrencyLimit : null);
     const id = Number(result.id);
     this.reloadClientAccess(id);
     return id;
@@ -309,7 +320,7 @@ export class Store {
 
   listClientKeys() {
     return this.db.prepare(`
-      SELECT c.id, c.label, c.last4, c.enabled, c.output_tps, c.allowed_origin, c.created_at, c.token_secret!='' copyable,
+      SELECT c.id, c.label, c.last4, c.enabled, c.output_tps, c.allowed_origin, c.concurrency_limit, c.created_at, c.token_secret!='' copyable,
         COALESCE(u.prompt_tokens, 0) prompt_tokens,
         COALESCE(u.completion_tokens, 0) completion_tokens,
         COALESCE(u.cached_tokens, 0) cached_tokens,
@@ -320,6 +331,7 @@ export class Store {
       ...row,
       id: Number(row.id),
       enabled: Boolean(row.enabled),
+      concurrency_limit: Number(row.concurrency_limit),
       copyable: Boolean(row.copyable),
     }));
   }
@@ -345,12 +357,13 @@ export class Store {
       if (access.id === id) this.clientAccess.delete(hash);
     }
     const rows = id == null
-      ? this.db.prepare('SELECT id, token_hash, output_tps, allowed_origin FROM client_keys WHERE enabled=1').all()
-      : this.db.prepare('SELECT id, token_hash, output_tps, allowed_origin FROM client_keys WHERE id=? AND enabled=1').all(id);
+      ? this.db.prepare('SELECT id, token_hash, output_tps, allowed_origin, concurrency_limit FROM client_keys WHERE enabled=1').all()
+      : this.db.prepare('SELECT id, token_hash, output_tps, allowed_origin, concurrency_limit FROM client_keys WHERE id=? AND enabled=1').all(id);
     for (const row of rows) this.clientAccess.set(row.token_hash, {
       id: Number(row.id),
       outputTps: Number(row.output_tps),
       allowedOrigin: row.allowed_origin,
+      concurrencyLimit: Number(row.concurrency_limit),
     });
   }
 
@@ -365,7 +378,9 @@ export class Store {
   }
 
   setClientAllowedOrigin(id, origin) {
-    this.db.prepare('UPDATE client_keys SET allowed_origin=? WHERE id=?').run(clientOrigin(origin), id);
+    const access = clientAccessMode(origin);
+    this.db.prepare('UPDATE client_keys SET allowed_origin=?, concurrency_limit=? WHERE id=?')
+      .run(access.allowedOrigin, access.concurrencyLimit, id);
     this.reloadClientAccess(id);
   }
 

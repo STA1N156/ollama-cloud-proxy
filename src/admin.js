@@ -33,7 +33,7 @@ async function json(req) {
 const cookies = (header = '') => Object.fromEntries(header.split(';').map((item) => item.trim().split('=').map(decodeURIComponent)).filter((item) => item.length === 2));
 
 export class AdminHandler {
-  constructor(config, store, pool, ledger, usage, modelSync, quotaSync) {
+  constructor(config, store, pool, ledger, usage, modelSync, quotaSync, proxy) {
     this.config = config;
     this.store = store;
     this.pool = pool;
@@ -41,12 +41,20 @@ export class AdminHandler {
     this.usage = usage;
     this.modelSync = modelSync;
     this.quotaSync = quotaSync;
+    this.proxy = proxy;
     this.loginAttempts = new Map();
   }
 
   session() {
     const expires = Date.now() + 12 * 60 * 60_000;
     return `${expires}.${hmac256(this.store.masterKey, String(expires))}`;
+  }
+
+  clientKeys() {
+    return this.store.listClientKeys().map((key) => ({
+      ...key,
+      in_flight: this.proxy?.clientConcurrency?.(key.id) || 0,
+    }));
   }
 
   authenticated(req) {
@@ -131,7 +139,7 @@ export class AdminHandler {
       await this.usage.flush();
       return send(res, 200, {
         upstreamKeys: this.pool.snapshot(),
-        clientKeys: this.store.listClientKeys(),
+        clientKeys: this.clientKeys(),
         allowAnonymous: this.config.allowAnonymous,
       });
     }
@@ -151,7 +159,7 @@ export class AdminHandler {
       return send(res, 200, {
         ...await this.usage.summary(hours()),
         upstreamKeys: this.pool.snapshot(),
-        clientKeys: this.store.listClientKeys(),
+        clientKeys: this.clientKeys(),
         models: this.store.listModels(),
         cache: await this.ledger.stats(),
         modelSyncError: this.modelSync.lastError,

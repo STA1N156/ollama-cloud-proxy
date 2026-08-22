@@ -87,8 +87,8 @@ function renderKeys() {
   $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td><code>•••• ${esc(key.last4)}</code></td><td title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
     <td><div class="rate-control"><input data-client-rate type="number" min="0" max="1000" value="${Number(key.output_tps) || 0}" aria-label="${esc(key.label)} 输出 token 每秒"><span>token/s</span><button data-action="save-client-rate" data-id="${key.id}">保存</button></div></td>
-    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 白名单"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin ? 'selected' : ''}>白名单</option></select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
-    <td><span class="badge ${key.enabled ? 'good' : 'warn'}">${key.enabled ? '启用' : '暂停'}</span></td>
+    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[5, 10, 20, 30, 40, 50, 60].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
+    <td><span class="badge ${key.enabled ? 'good' : 'warn'}">${key.enabled ? `${Number(key.in_flight) || 0} / ${key.concurrency_limit || '∞'}` : `暂停 · ${Number(key.in_flight) || 0}`}</span></td>
     <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-client" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未生成下游访问密钥</td></tr>';
 
@@ -262,9 +262,10 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (action === 'save-client-origin') {
-      const origin = button.closest('tr').querySelector('[data-client-origin]').value;
-      await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ allowedOrigin: origin }) });
-      toast(origin ? '已启用白名单，接受 RP-Hub 源站或 Codex Router' : '已关闭白名单');
+      const mode = button.closest('tr').querySelector('[data-client-origin]').value;
+      await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ allowedOrigin: mode }) });
+      const limit = Number(mode.split(':')[1]) || 0;
+      toast(limit ? `已启用白名单并限制为 ${limit} 并发` : mode ? '已启用白名单' : '已关闭白名单');
       await load('keys');
       return;
     }
