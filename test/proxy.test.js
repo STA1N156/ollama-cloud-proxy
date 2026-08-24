@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { CacheLedger } from '../src/cache.js';
 import { KeyPool } from '../src/key-pool.js';
 import { ModelSync } from '../src/model-sync.js';
-import { contentRoutingIdentity, injectUsage, ProxyHandler, routingSessionKey } from '../src/proxy.js';
+import { contentRoutingIdentity, injectUsage, normalizeOllamaResponsesBody, ProxyHandler, routingSessionKey } from '../src/proxy.js';
 import { Store } from '../src/store.js';
 import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
@@ -47,6 +47,23 @@ test('按 New API 标准回报缓存 token 和思考过程', () => {
   }), hit, 10).data).choices[0].message;
   assert.equal(reasoning.reasoning, '思考过程');
   assert.equal(reasoning.reasoning_content, '思考过程');
+});
+
+test('Ollama Responses 将不支持的搜索调用项转换为普通消息', () => {
+  const body = {
+    model: 'deepseek-v4-pro',
+    input: [
+      { type: 'message', role: 'user', content: '搜索最新新闻' },
+      { type: 'web_search_call', id: 'call-1', action: { query: '最新新闻' } },
+      { type: 'function_call', call_id: 'fn-1', name: 'web_search', arguments: '{}' },
+    ],
+  };
+  const normalized = normalizeOllamaResponsesBody(body);
+  assert.equal(normalized.input[0], body.input[0]);
+  assert.deepEqual(normalized.input[1], {
+    type: 'message', role: 'assistant', content: '[web_search_call] {"query":"最新新闻"}',
+  });
+  assert.equal(normalized.input[2], body.input[2]);
 });
 
 test('下游收到最终 usage 后立刻断开仍保留统计和完成状态', async () => {

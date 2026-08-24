@@ -116,10 +116,11 @@ function renderModels() {
 function renderUsage() {
   const percent = (value) => Math.min(100, Math.max(0, Number(value) * 100));
   const tone = (value) => value >= 90 ? 'bad' : value >= 70 ? 'warn' : '';
-  const exhaustion = (period) => {
+  const exhaustion = (period, maxMs) => {
     if (percent(period?.usage) >= 100) return '已耗尽';
-    if (period?.exhaustionMs == null) return '暂无法估算';
-    const totalMinutes = Math.max(1, Math.ceil(Number(period.exhaustionMs) / 60_000));
+    const remainingMs = Number(period?.exhaustionMs);
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0 || remainingMs > maxMs) return '暂无法估算';
+    const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
     const days = Math.floor(totalMinutes / 1440);
     const hours = Math.floor(totalMinutes % 1440 / 60);
     const minutes = totalMinutes % 60;
@@ -127,12 +128,12 @@ function renderUsage() {
     if (hours) return `约 ${hours}小时${minutes ? `${minutes}分` : ''}后耗尽`;
     return `约 ${minutes || 1}分后耗尽`;
   };
-  const meter = (label, period) => {
+  const meter = (label, period, maxMs) => {
     const used = percent(period?.usage);
     const calls = (period?.models || []).reduce((sum, item) => sum + Number(item.requestCount || 0), 0);
     return `<div class="quota-meter"><div class="quota-meter-label"><span>${label}</span><strong>${used.toFixed(1)}%</strong></div>
       <progress class="quota-progress ${tone(used)}" max="100" value="${used}" aria-label="${label}已用 ${used.toFixed(1)}%"></progress>
-      <div class="quota-meter-note"><span>${exhaustion(period)}</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
+      <div class="quota-meter-note"><span>${exhaustion(period, maxMs)}</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
   };
   const modelList = (label, items = []) => `<section class="quota-model-list"><h4>${label}</h4>${items.length ? [...items]
     .sort((a, b) => Number(b.requestCount) - Number(a.requestCount))
@@ -145,7 +146,7 @@ function renderUsage() {
       <div class="quota-wait"><strong>暂未读取到额度</strong><span>${esc(key.quotaError || '正在等待首次同步')}</span></div></article>`;
     return `<article class="quota-card"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div>
       <div><span class="badge ${key.tier === 'max' ? 'good' : ''}">${String(key.tier || 'max').toUpperCase()}</span>${badge(key.status)}</div></div>
-      <div class="quota-meters">${meter('当前 5 小时', quota.session)}${meter('本周额度', quota.weekly)}</div>${error}
+      <div class="quota-meters">${meter('当前 5 小时', quota.session, 5 * 60 * 60_000)}${meter('本周额度', quota.weekly, 7 * 24 * 60 * 60_000)}</div>${error}
       <details class="quota-details"><summary>查看本周模型调用明细<span>按次数从高到低</span></summary>${modelList('本周', quota.weekly?.models)}</details></article>`;
   }).join('') : '<div class="empty">还没有添加 Ollama Cloud 密钥</div>';
 }

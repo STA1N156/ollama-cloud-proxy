@@ -6,6 +6,33 @@ const hopByHop = new Set(['authorization', 'connection', 'content-length', 'cont
 const rphOrigins = new Set(['https://sta1n156.github.io', 'https://api.sta1n.site', 'https://cdn.sta1n.cn']);
 const codexRouterAgent = /^codex-router\/\S+/i;
 const internalServerError400 = (status, body) => status === 400 && /\binternal server error\b/i.test(body);
+const unsupportedOllamaResponseItems = new Set([
+  'web_search_call', 'custom_tool_call', 'custom_tool_call_output', 'computer_call', 'computer_call_output',
+  'code_interpreter_call', 'file_search_call', 'mcp_call', 'mcp_list_tools', 'mcp_approval_request', 'mcp_approval_response',
+]);
+
+const responseItemText = (item) => {
+  const value = item.action || item.output || item.result || item.arguments || item.input || item.content;
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  try { return JSON.stringify(value); } catch { return ''; }
+};
+
+export function normalizeOllamaResponsesBody(body) {
+  if (!Array.isArray(body?.input)) return body;
+  let changed = false;
+  const input = body.input.map((item) => {
+    if (!item || typeof item !== 'object' || !unsupportedOllamaResponseItems.has(item.type)) return item;
+    changed = true;
+    const text = responseItemText(item);
+    return {
+      type: 'message',
+      role: item.role === 'user' ? 'user' : 'assistant',
+      content: text ? `[${item.type}] ${text}` : `[${item.type}]`,
+    };
+  });
+  return changed ? { ...body, input } : body;
+}
 
 const jsonError = (res, status, message, type = 'proxy_error') => {
   if (res.headersSent) return res.destroy();
@@ -368,6 +395,8 @@ export class ProxyHandler {
     const clientWantsUsage = includeUsage(request);
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
     let upstreamBody = forceStreamUsage ? forceUsageBody(raw, request, url.pathname) : raw;
+    const normalizedResponsesBody = url.pathname === '/v1/responses' ? normalizeOllamaResponsesBody(request) : request;
+    const normalizedOllamaBody = normalizedResponsesBody === request ? raw : Buffer.from(JSON.stringify(normalizedResponsesBody));
     const supportsLocalCache = ['/v1/chat/completions', '/v1/responses', '/v1/completions'].includes(url.pathname);
     let fingerprintRequest = supportsLocalCache ? cacheRequest(request) : null;
     const explicitStickyKey = this.pool.stickyEnabled ? routingSessionKey(req.headers, request, clientKeyId, model) : '';
@@ -419,10 +448,11 @@ export class ProxyHandler {
         excluded.add(lease.id);
         const target = `${lease.baseUrl}${url.pathname.slice(3)}${url.search}`;
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.config.responseHeaderTimeoutMs)]);
+        const body = lease.baseUrl === this.store.defaultUpstreamBaseUrl ? normalizedOllamaBody : upstreamBody;
         const fetchJob = fetch(target, {
           method: 'POST',
           headers: copyRequestHeaders(req, lease.secret),
-          body: upstreamBody,
+          body,
           signal,
           redirect: 'manual',
         });

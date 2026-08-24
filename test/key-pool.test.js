@@ -10,6 +10,12 @@ test('根据最近多次额度走势估算耗尽时间', () => {
   ]), 480_000);
   assert.equal(estimateQuotaExhaustion([{ at: 0, usage: 0.5 }, { at: 60_000, usage: 0.5 }, { at: 120_000, usage: 0.5 }]), null);
   assert.equal(estimateQuotaExhaustion([
+    { at: 0, usage: 0.5 }, { at: 60_000, usage: 0.5 + Number.EPSILON }, { at: 120_000, usage: 0.5 + Number.EPSILON * 2 },
+  ]), null);
+  assert.equal(estimateQuotaExhaustion([
+    { at: 0, usage: 0.5 }, { at: 60_000, usage: 0.55 }, { at: 120_000, usage: 0.6 },
+  ], 300_000), null);
+  assert.equal(estimateQuotaExhaustion([
     { at: 0, usage: 0.9 }, { at: 60_000, usage: 0.1 }, { at: 120_000, usage: 0.2 },
   ]), null);
 });

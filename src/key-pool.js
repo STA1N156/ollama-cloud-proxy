@@ -1,4 +1,7 @@
-export function estimateQuotaExhaustion(history) {
+const FIVE_HOURS_MS = 5 * 60 * 60_000;
+const WEEK_MS = 7 * 24 * 60 * 60_000;
+
+export function estimateQuotaExhaustion(history, maxMs = WEEK_MS) {
   let points = history.filter((point) => Number.isFinite(point.at) && Number.isFinite(point.usage));
   let resetAt = 0;
   for (let index = 1; index < points.length; index += 1) {
@@ -19,16 +22,18 @@ export function estimateQuotaExhaustion(history) {
   const rate = denominator ? numerator / denominator : 0;
   const current = points.at(-1).usage;
   if (current >= 1) return 0;
+  const spread = Math.max(...points.map((point) => point.usage)) - Math.min(...points.map((point) => point.usage));
+  if (spread < 0.0001) return null;
   if (!(rate > 0)) return null;
   const remaining = (1 - current) / rate;
-  return Number.isFinite(remaining) && remaining > 0 ? Math.round(remaining) : null;
+  return Number.isFinite(remaining) && remaining > 0 && remaining <= maxMs ? Math.round(remaining) : null;
 }
 
-const updateQuotaHistory = (history, usage, at) => {
+const updateQuotaHistory = (history, usage, at, maxMs) => {
   if (!Number.isFinite(usage)) return null;
   history.push({ usage, at });
   if (history.length > 8) history.shift();
-  return estimateQuotaExhaustion(history);
+  return estimateQuotaExhaustion(history, maxMs);
 };
 
 const STICKY_TTL_MS = 60 * 60_000;
@@ -256,8 +261,8 @@ export class KeyPool {
       key.quotaHistory ||= { session: [], weekly: [] };
       quota = {
         ...quota,
-        session: { ...quota.session, exhaustionMs: updateQuotaHistory(key.quotaHistory.session, Number(quota.session?.usage), key.quotaCheckedAt) },
-        weekly: { ...quota.weekly, exhaustionMs: updateQuotaHistory(key.quotaHistory.weekly, Number(quota.weekly?.usage), key.quotaCheckedAt) },
+        session: { ...quota.session, exhaustionMs: updateQuotaHistory(key.quotaHistory.session, Number(quota.session?.usage), key.quotaCheckedAt, FIVE_HOURS_MS) },
+        weekly: { ...quota.weekly, exhaustionMs: updateQuotaHistory(key.quotaHistory.weekly, Number(quota.weekly?.usage), key.quotaCheckedAt, WEEK_MS) },
       };
       const sessionUsage = Number(quota.session?.usage);
       if (Number.isFinite(sessionUsage)) {
