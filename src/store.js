@@ -45,7 +45,7 @@ export class Store {
         label TEXT NOT NULL,
         base_url TEXT NOT NULL,
         secret TEXT NOT NULL,
-        secret_hash TEXT NOT NULL UNIQUE,
+        secret_hash TEXT NOT NULL,
         last4 TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         use_proxy_cache INTEGER NOT NULL DEFAULT 0,
@@ -168,6 +168,35 @@ export class Store {
     }
     this.db.exec("UPDATE upstream_keys SET tier='max' WHERE tier NOT IN ('max', 'pro') OR tier IS NULL");
     this.db.prepare("UPDATE upstream_keys SET base_url=? WHERE base_url='' OR base_url IS NULL").run(this.defaultUpstreamBaseUrl);
+    const upstreamUnique = this.db.prepare("PRAGMA index_list('upstream_keys')").all().filter((index) => index.unique);
+    const hasGlobalSecretUnique = upstreamUnique.some((index) => {
+      const columns = this.db.prepare('SELECT name FROM pragma_index_info(?) ORDER BY seqno').all(index.name).map((column) => column.name);
+      return columns.length === 1 && columns[0] === 'secret_hash';
+    });
+    if (hasGlobalSecretUnique) {
+      this.db.exec(`
+        BEGIN IMMEDIATE;
+        CREATE TABLE upstream_keys_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, base_url TEXT NOT NULL,
+          secret TEXT NOT NULL, secret_hash TEXT NOT NULL, last4 TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1, use_proxy_cache INTEGER NOT NULL DEFAULT 0,
+          tier TEXT NOT NULL DEFAULT 'max', status TEXT NOT NULL DEFAULT 'new', last_error TEXT NOT NULL DEFAULT '',
+          cooldown_until INTEGER NOT NULL DEFAULT 0, session_quota_blocked INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        INSERT INTO upstream_keys_new(
+          id, label, base_url, secret, secret_hash, last4, enabled, use_proxy_cache, tier,
+          status, last_error, cooldown_until, session_quota_blocked, created_at, updated_at
+        )
+        SELECT id, label, base_url, secret, secret_hash, last4, enabled, use_proxy_cache, tier,
+          status, last_error, cooldown_until, session_quota_blocked, created_at, updated_at
+        FROM upstream_keys;
+        DROP TABLE upstream_keys;
+        ALTER TABLE upstream_keys_new RENAME TO upstream_keys;
+        COMMIT;
+      `);
+    }
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_source_secret ON upstream_keys(base_url, secret_hash)');
     const modelColumns = this.db.prepare('PRAGMA table_info(models)').all();
     if (!modelColumns.some((column) => column.name === 'source_url')) {
       this.db.exec(`
@@ -250,19 +279,15 @@ export class Store {
     const level = source === this.defaultUpstreamBaseUrl && tier != null ? upstreamTier(tier) : 'max';
     const replaceTier = tier != null || source !== this.defaultUpstreamBaseUrl;
     const hash = sha256(value);
-    const previous = this.db.prepare('SELECT base_url FROM upstream_keys WHERE secret_hash=?').get(hash);
     const stamp = now();
     const result = this.db.prepare(`
       INSERT INTO upstream_keys(label, base_url, secret, secret_hash, last4, use_proxy_cache, tier, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(secret_hash) DO UPDATE SET label=excluded.label, base_url=excluded.base_url,
+      ON CONFLICT(base_url, secret_hash) DO UPDATE SET label=excluded.label,
         use_proxy_cache=excluded.use_proxy_cache, tier=CASE WHEN ? THEN excluded.tier ELSE upstream_keys.tier END,
         enabled=1, status='new', last_error='', cooldown_until=0, updated_at=excluded.updated_at
       RETURNING id
     `).get(label.trim() || `Key ${value.slice(-4)}`, source, encrypt(value, this.masterKey), hash, value.slice(-4), useProxyCache ? 1 : 0, level, stamp, stamp, replaceTier ? 1 : 0);
-    if (previous && previous.base_url !== source && !this.db.prepare('SELECT 1 FROM upstream_keys WHERE base_url=? LIMIT 1').get(previous.base_url)) {
-      this.db.prepare('DELETE FROM models WHERE source_url=?').run(previous.base_url);
-    }
     return Number(result.id);
   }
 

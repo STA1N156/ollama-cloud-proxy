@@ -1,7 +1,7 @@
 const normalizeModels = (data) => {
   const items = Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : null;
   if (!items) throw new Error('模型列表格式不正确');
-  return items.map((item) => {
+  const models = items.map((item) => {
     const name = item.id || item.name || item.model;
     return {
       name,
@@ -12,6 +12,8 @@ const normalizeModels = (data) => {
       details: item.details || { owner: item.owned_by || '' },
     };
   }).filter((item) => item.name);
+  if (!models.length) throw new Error('模型列表为空');
+  return models;
 };
 
 export class ModelSync {
@@ -21,11 +23,27 @@ export class ModelSync {
     this.pool = pool;
     this.lastError = '';
     this.running = null;
+    this.pending = false;
   }
 
   sync() {
+    this.pending = true;
     if (this.running) return this.running;
-    this.running = this.#sync().finally(() => { this.running = null; });
+    this.running = (async () => {
+      let count = 0;
+      let error = null;
+      do {
+        this.pending = false;
+        try {
+          count = await this.#sync();
+          error = null;
+        } catch (failure) {
+          error = failure;
+        }
+      } while (this.pending);
+      if (error) throw error;
+      return count;
+    })().finally(() => { this.running = null; });
     return this.running;
   }
 

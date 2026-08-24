@@ -139,6 +139,10 @@ test('旧上游和模型数据自动迁移到默认 API 地址', (t) => {
   assert.equal(store.getUpstreamKey(officialId).tier, 'pro');
   store.addUpstreamKey('环境变量重新导入', 'official-secret', config.upstreamBaseUrl);
   assert.equal(store.getUpstreamKey(officialId).tier, 'pro');
+  const sameSecretExternalId = store.addUpstreamKey('同密钥外部渠道', 'official-secret', 'https://second.example/v1');
+  assert.notEqual(sameSecretExternalId, officialId);
+  assert.equal(store.addUpstreamKey('重复导入同一渠道', 'official-secret', 'https://second.example/v1'), sameSecretExternalId);
+  assert.equal(store.listUpstreamKeys().filter((key) => key.last4 === 'cret').length, 2);
   store.setUpstreamTier(officialId, 'max');
   assert.equal(store.getUpstreamKey(officialId).tier, 'max');
   const id = store.addUpstreamKey('External', 'external-secret', 'https://external.example/v1/');
