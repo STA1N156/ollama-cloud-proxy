@@ -1,5 +1,6 @@
 const FIVE_HOURS_MS = 5 * 60 * 60_000;
 const WEEK_MS = 7 * 24 * 60 * 60_000;
+const MONTH_MS = 31 * 24 * 60 * 60_000;
 
 export function estimateQuotaExhaustion(history, maxMs = WEEK_MS) {
   let points = history.filter((point) => Number.isFinite(point.at) && Number.isFinite(point.usage));
@@ -157,12 +158,13 @@ export class KeyPool {
   }
 
   quotaBalanced(keys) {
+    const balanceUsage = (key) => Number(key.quota?.weekly?.usage ?? key.quota?.monthly?.usage);
     const fresh = keys.filter((key) => key.base_url === this.store.defaultUpstreamBaseUrl
-      && Number.isFinite(key.quota?.weekly?.usage)
+      && Number.isFinite(balanceUsage(key))
       && Date.now() - Number(key.quotaFetchedAt) < 10 * 60_000);
     if (fresh.length < 2) return keys;
-    const lowest = Math.min(...fresh.map((key) => key.quota.weekly.usage));
-    const balanced = new Set(fresh.filter((key) => key.quota.weekly.usage <= lowest + 0.01).map((key) => key.id));
+    const lowest = Math.min(...fresh.map(balanceUsage));
+    const balanced = new Set(fresh.filter((key) => balanceUsage(key) <= lowest + 0.01).map((key) => key.id));
     return keys.filter((key) => key.base_url !== this.store.defaultUpstreamBaseUrl || !fresh.includes(key) || balanced.has(key.id));
   }
 
@@ -258,20 +260,22 @@ export class KeyPool {
     key.quotaCheckedAt = Date.now();
     key.quotaError = error.slice(0, 300);
     if (quota) {
-      key.quotaHistory ||= { session: [], weekly: [] };
-      quota = {
-        ...quota,
-        session: { ...quota.session, exhaustionMs: updateQuotaHistory(key.quotaHistory.session, Number(quota.session?.usage), key.quotaCheckedAt, FIVE_HOURS_MS) },
-        weekly: { ...quota.weekly, exhaustionMs: updateQuotaHistory(key.quotaHistory.weekly, Number(quota.weekly?.usage), key.quotaCheckedAt, WEEK_MS) },
-      };
+      key.quotaHistory ||= {};
+      quota = { ...quota };
+      for (const [period, maxMs] of Object.entries({ session: FIVE_HOURS_MS, weekly: WEEK_MS, monthly: MONTH_MS })) {
+        if (!quota[period]) continue;
+        key.quotaHistory[period] ||= [];
+        quota[period] = {
+          ...quota[period],
+          exhaustionMs: updateQuotaHistory(key.quotaHistory[period], Number(quota[period].usage), key.quotaCheckedAt, maxMs),
+        };
+      }
       const sessionUsage = Number(quota.session?.usage);
-      if (Number.isFinite(sessionUsage)) {
-        const blocked = sessionUsage >= 0.95;
-        if (blocked !== key.session_quota_blocked) {
-          key.session_quota_blocked = blocked;
-          this.store.setUpstreamSessionQuotaBlocked(id, blocked);
-          routingChanged = true;
-        }
+      const blocked = Number.isFinite(sessionUsage) && sessionUsage >= 0.95;
+      if (blocked !== key.session_quota_blocked) {
+        key.session_quota_blocked = blocked;
+        this.store.setUpstreamSessionQuotaBlocked(id, blocked);
+        routingChanged = true;
       }
       key.quota = quota;
       key.quotaFetchedAt = key.quotaCheckedAt;

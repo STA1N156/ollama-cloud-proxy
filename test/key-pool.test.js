@@ -168,6 +168,26 @@ test('优先使用周额度较低的 Ollama 密钥，额度接近后恢复等级
   assert.deepEqual([...assigned.values()], [5, 1]);
 });
 
+test('周额度与月额度账号混合时按已用百分比均摊', async (t) => {
+  const config = tempConfig();
+  const store = new Store(config);
+  const weeklyId = store.addUpstreamKey('Weekly', 'key-weekly');
+  const monthlyId = store.addUpstreamKey('Monthly', 'key-monthly');
+  const pool = new KeyPool(store);
+  t.after(() => { store.close(); config.cleanup(); });
+
+  pool.updateQuota(weeklyId, { session: { usage: 0.2 }, weekly: { usage: 0.7 } });
+  pool.updateQuota(monthlyId, { monthly: { usage: 0.3 } });
+  let lease = await pool.acquire('model-a');
+  assert.equal(lease.id, monthlyId);
+  lease.release();
+
+  pool.updateQuota(weeklyId, { session: { usage: 0.95 }, weekly: { usage: 0.3 } });
+  assert.equal(store.getUpstreamKey(weeklyId).session_quota_blocked, true);
+  pool.updateQuota(weeklyId, { monthly: { usage: 0.3 } });
+  assert.equal(store.getUpstreamKey(weeklyId).session_quota_blocked, false);
+});
+
 test('5小时已用额度达到95%后停用，成功刷新至95%以下才恢复', async (t) => {
   const config = tempConfig();
   const store = new Store(config);

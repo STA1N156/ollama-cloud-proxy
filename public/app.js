@@ -144,10 +144,16 @@ function renderUsage() {
     const error = key.quotaError ? `<div class="quota-error">${esc(key.quotaError)}</div>` : '';
     if (!quota) return `<article class="quota-card quota-unavailable"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div><div>${badge(key.status)}</div></div>
       <div class="quota-wait"><strong>暂未读取到额度</strong><span>${esc(key.quotaError || '正在等待首次同步')}</span></div></article>`;
+    const periods = [
+      quota.session && ['当前 5 小时', quota.session, 5 * 60 * 60_000],
+      quota.weekly && ['本周额度', quota.weekly, 7 * 24 * 60 * 60_000],
+      quota.monthly && ['本月额度', quota.monthly, 31 * 24 * 60 * 60_000],
+    ].filter(Boolean);
+    const details = quota.weekly ? ['本周', quota.weekly] : quota.monthly ? ['本月', quota.monthly] : ['当前 5 小时', quota.session];
     return `<article class="quota-card"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div>
       <div><span class="badge ${key.tier === 'max' ? 'good' : ''}">${String(key.tier || 'max').toUpperCase()}</span>${badge(key.status)}</div></div>
-      <div class="quota-meters">${meter('当前 5 小时', quota.session, 5 * 60 * 60_000)}${meter('本周额度', quota.weekly, 7 * 24 * 60 * 60_000)}</div>${error}
-      <details class="quota-details"><summary>查看本周模型调用明细<span>按次数从高到低</span></summary>${modelList('本周', quota.weekly?.models)}</details></article>`;
+      <div class="quota-meters">${periods.map((period) => meter(...period)).join('')}</div>${error}
+      <details class="quota-details"><summary>查看${details[0]}模型调用明细<span>按次数从高到低</span></summary>${modelList(details[0], details[1]?.models)}</details></article>`;
   }).join('') : '<div class="empty">还没有添加 Ollama Cloud 密钥</div>';
 }
 

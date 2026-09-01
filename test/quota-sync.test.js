@@ -11,6 +11,10 @@ test('按 Ollama 密钥读取官方额度并按模型调用次数排序', async 
   const upstream = http.createServer((req, res) => {
     const pro = req.headers.authorization === 'Bearer key-pro';
     res.setHeader('content-type', 'application/json');
+    if (req.headers.authorization === 'Bearer key-monthly') return res.end(JSON.stringify({
+      activity: { cost: '0.00000', period: { type: 'last_4_weeks' } },
+      limits: { monthly: { usage: 0.4, models: [{ name: 'monthly-small', request_count: 2 }, { name: 'monthly-large', request_count: 12 }] } },
+    }));
     res.end(JSON.stringify({
       activity: { cost: pro ? '1.25000' : '0.00000', period: { starting_at: '2026-08-01T00:00:00Z', ending_at: '2026-08-20T00:00:00Z' } },
       limits: {
@@ -26,6 +30,7 @@ test('按 Ollama 密钥读取官方额度并按模型调用次数排序', async 
   const store = new Store(config);
   store.addUpstreamKey('MAX', 'key-max');
   store.addUpstreamKey('PRO', 'key-pro');
+  store.addUpstreamKey('Monthly', 'key-monthly');
   store.addUpstreamKey('External', 'external-key', `${origin}/external/v1`);
   const pool = new KeyPool(store);
   const sync = new QuotaSync(config, store, pool);
@@ -36,5 +41,8 @@ test('按 Ollama 密钥读取官方额度并按模型调用次数排序', async 
   assert.equal(keys[0].quota.weekly.usage, 0.3);
   assert.deepEqual(keys[0].quota.session.models.map((item) => item.name), ['large', 'small']);
   assert.equal(keys[1].quota.weekly.usage, 0.6);
-  assert.equal(keys[2].quota, undefined);
+  assert.equal(keys[2].quota.monthly.usage, 0.4);
+  assert.deepEqual(keys[2].quota.monthly.models.map((item) => item.name), ['monthly-large', 'monthly-small']);
+  assert.equal(keys[2].quota.weekly, undefined);
+  assert.equal(keys[3].quota, undefined);
 });

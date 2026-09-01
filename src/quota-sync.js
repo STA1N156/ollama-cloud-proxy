@@ -6,13 +6,15 @@ const models = (items) => (Array.isArray(items) ? items : [])
   .sort((a, b) => b.requestCount - a.requestCount || a.name.localeCompare(b.name));
 
 const normalize = (data) => {
-  if (!Number.isFinite(Number(data?.limits?.session?.usage)) || !Number.isFinite(Number(data?.limits?.weekly?.usage))) {
-    throw new Error('额度接口返回格式不正确');
+  const normalized = {};
+  for (const period of ['session', 'weekly', 'monthly']) {
+    const value = data?.limits?.[period];
+    if (Number.isFinite(Number(value?.usage))) {
+      normalized[period] = { usage: usage(value.usage), models: models(value.models) };
+    }
   }
-  return {
-    session: { usage: usage(data.limits.session.usage), models: models(data.limits.session.models) },
-    weekly: { usage: usage(data.limits.weekly.usage), models: models(data.limits.weekly.models) },
-  };
+  if (!Object.keys(normalized).length) throw new Error('额度接口返回格式不正确');
+  return normalized;
 };
 
 export class QuotaSync {
