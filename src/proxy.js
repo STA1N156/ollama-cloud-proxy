@@ -1,8 +1,7 @@
 import { cachedTokenCount } from './cache.js';
-import { sha256 } from './crypto.js';
 
 const retryable = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
-const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'x-proxy-session']);
+const hopByHop = new Set(['authorization', 'connection', 'content-length', 'content-encoding', 'cookie', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const rphOrigins = new Set(['https://sta1n156.github.io', 'https://api.sta1n.site', 'https://cdn.sta1n.cn']);
 const codexRouterAgent = /^codex-router\/\S+/i;
 const internalServerError400 = (status, body) => status === 400 && /\binternal server error\b/i.test(body);
@@ -43,19 +42,6 @@ const jsonError = (res, status, message, type = 'proxy_error') => {
 
 const bearer = (header = '') => header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || '';
 
-export function routingSessionKey(headers, request, clientKeyId, model) {
-  const header = Array.isArray(headers['x-proxy-session']) ? headers['x-proxy-session'][0] : headers['x-proxy-session'];
-  const session = String(header || request?.conversation_id || request?.session_id
-    || request?.metadata?.conversation_id || request?.metadata?.session_id || request?.user || '').trim();
-  return session ? sha256(`${clientKeyId ?? 'anonymous'}\0${model}\0${session}`) : '';
-}
-
-export function contentRoutingIdentity(fingerprint, clientKeyId, model) {
-  const prefix = `${clientKeyId ?? 'anonymous'}\0${model}\0`;
-  const lookupKeys = (fingerprint?.entries || []).map((entry) => `${prefix}${entry.hash}`).reverse();
-  return lookupKeys.length ? { lookupKeys, rememberKey: lookupKeys[0] } : null;
-}
-
 const wait = (ms, signal) => new Promise((resolve, reject) => {
   if (ms <= 0) return resolve();
   if (signal?.aborted) return reject(signal.reason || new Error('请求已取消'));
@@ -63,15 +49,6 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
   function done() { signal?.removeEventListener('abort', abort); resolve(); }
   function abort() { clearTimeout(timer); reject(signal.reason || new Error('请求已取消')); }
   signal?.addEventListener('abort', abort, { once: true });
-});
-
-const waitForFingerprint = (job, timeoutMs = 50) => new Promise((resolve) => {
-  const timer = setTimeout(() => resolve(null), timeoutMs);
-  timer.unref();
-  job.then((fingerprint) => {
-    clearTimeout(timer);
-    resolve(fingerprint);
-  });
 });
 
 function normalizeReasoning(object) {
@@ -163,7 +140,7 @@ function cacheRequest(request) {
   return selected;
 }
 
-function usageFromObject(object, hit, totalWeight, injectCache = true, replaceUpstreamCache = false) {
+function usageFromObject(object, hit, totalWeight, injectCache = true) {
   const usage = object?.usage || object?.response?.usage;
   if (!usage || typeof usage !== 'object') return null;
 
@@ -174,8 +151,7 @@ function usageFromObject(object, hit, totalWeight, injectCache = true, replaceUp
   const detailKey = chat ? 'prompt_tokens_details' : 'input_tokens_details';
   const details = usage[detailKey] && typeof usage[detailKey] === 'object' ? usage[detailKey] : {};
   const upstreamCached = Number(details.cached_tokens) || 0;
-  const proxyCached = injectCache ? cachedTokenCount(hit, promptTokens, totalWeight) : 0;
-  const cachedTokens = Math.min(promptTokens, replaceUpstreamCache ? proxyCached : Math.max(proxyCached, upstreamCached));
+  const cachedTokens = Math.min(promptTokens, injectCache ? cachedTokenCount(hit, promptTokens, totalWeight) : upstreamCached);
   if (injectCache) usage[detailKey] = { ...details, cached_tokens: cachedTokens };
   return { promptTokens, completionTokens, totalTokens, cachedTokens };
 }
@@ -193,7 +169,7 @@ function mergeUsage(current, next) {
   };
 }
 
-export function injectUsage(data, hit, totalWeight, injectCache = true, replaceUpstreamCache = false) {
+export function injectUsage(data, hit, totalWeight, injectCache = true) {
   let object;
   try {
     object = JSON.parse(data);
@@ -201,12 +177,12 @@ export function injectUsage(data, hit, totalWeight, injectCache = true, replaceU
     return { data, usage: null, usageOnly: false, reasoningNormalized: false };
   }
   const reasoningNormalized = normalizeReasoning(object);
-  const usage = usageFromObject(object, hit, totalWeight, injectCache, replaceUpstreamCache);
+  const usage = usageFromObject(object, hit, totalWeight, injectCache);
   const usageOnly = Boolean(usage && Array.isArray(object.choices) && object.choices.length === 0);
   return { data: JSON.stringify(object), usage, usageOnly, reasoningNormalized };
 }
 
-async function patchSseEvent(event, resolveCache, forwardUsage, injectCache, countOutput = false, replaceUpstreamCache = false) {
+async function patchSseEvent(event, resolveCache, forwardUsage, injectCache, countOutput = false) {
   const lines = event.replace(/\r\n/g, '\n').split('\n');
   const dataLines = lines.filter((line) => line.startsWith('data:'));
   if (!dataLines.length) return { event, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
@@ -220,7 +196,7 @@ async function patchSseEvent(event, resolveCache, forwardUsage, injectCache, cou
   const cache = rawUsage && typeof rawUsage === 'object' && injectCache
     ? await resolveCache()
     : { hit: null, fingerprint: { totalWeight: 0 } };
-  const usage = usageFromObject(object, cache.hit, cache.fingerprint.totalWeight, injectCache, replaceUpstreamCache);
+  const usage = usageFromObject(object, cache.hit, cache.fingerprint.totalWeight, injectCache);
   const usageOnly = Boolean(usage && Array.isArray(object.choices) && object.choices.length === 0);
   const done = object?.type === 'response.completed' || object?.response?.status === 'completed';
   const outputCharacters = countOutput ? outputCharacterCount(object) : 0;
@@ -344,7 +320,7 @@ export class ProxyHandler {
       const origin = rphOrigins.has(req.headers.origin) ? req.headers.origin : '*';
       res.writeHead(204, {
         'access-control-allow-origin': origin,
-        'access-control-allow-headers': 'authorization, content-type, x-proxy-session',
+        'access-control-allow-headers': 'authorization, content-type',
         'access-control-allow-methods': 'GET, POST, OPTIONS',
         'access-control-max-age': '600',
       });
@@ -396,17 +372,8 @@ export class ProxyHandler {
     const forceStreamUsage = stream && ['/v1/chat/completions', '/v1/completions'].includes(url.pathname) && !clientWantsUsage;
     let upstreamBody = forceStreamUsage ? forceUsageBody(raw, request, url.pathname) : raw;
     const normalizedResponsesBody = url.pathname === '/v1/responses' ? normalizeOllamaResponsesBody(request) : request;
-    const normalizedOllamaBody = normalizedResponsesBody === request ? raw : Buffer.from(JSON.stringify(normalizedResponsesBody));
+    const normalizedOllamaBody = normalizedResponsesBody === request ? upstreamBody : Buffer.from(JSON.stringify(normalizedResponsesBody));
     const supportsLocalCache = ['/v1/chat/completions', '/v1/responses', '/v1/completions'].includes(url.pathname);
-    let fingerprintRequest = supportsLocalCache ? cacheRequest(request) : null;
-    const explicitStickyKey = this.pool.stickyEnabled ? routingSessionKey(req.headers, request, clientKeyId, model) : '';
-    let contentFingerprint;
-    let contentFingerprintJob;
-    if (this.pool.stickyEnabled && !explicitStickyKey && fingerprintRequest) {
-      contentFingerprintJob = this.ledger.fingerprint(url.pathname, fingerprintRequest).catch(() => null);
-      contentFingerprint = await waitForFingerprint(contentFingerprintJob);
-    }
-    const stickyIdentity = explicitStickyKey || contentRoutingIdentity(contentFingerprint, clientKeyId, model);
     const excluded = new Set();
     const controller = new AbortController();
     req.once('aborted', () => controller.abort(new Error('客户端已断开')));
@@ -426,11 +393,7 @@ export class ProxyHandler {
       hit: { matched: false, exact: false, weight: 0, observedTokens: 0 },
     };
     const startCache = () => {
-      if (!cacheJob) cacheJob = (contentFingerprintJob
-        ? contentFingerprintJob.then((fingerprint) => (fingerprint
-          ? this.ledger.lookup(fingerprint, model).then((hit) => ({ fingerprint, hit }))
-          : this.ledger.resolve(url.pathname, fingerprintRequest, model)))
-        : this.ledger.resolve(url.pathname, fingerprintRequest, model)).then(
+      if (!cacheJob) cacheJob = this.ledger.resolve(url.pathname, cacheRequest(request), model).then(
         (value) => { cacheState.value = value; return value; },
         (error) => { cacheState.value = cacheFallback; console.error('cache lookup failed:', error.message); return cacheFallback; },
       );
@@ -439,11 +402,11 @@ export class ProxyHandler {
     while (ordinaryFailures < this.config.retryCount) {
       try {
         try {
-          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyIdentity);
+          lease = await this.pool.acquire(model, excluded, controller.signal);
         } catch (error) {
           if (controller.signal.aborted || !excluded.size) throw error;
           excluded.clear();
-          lease = await this.pool.acquire(model, excluded, controller.signal, undefined, stickyIdentity);
+          lease = await this.pool.acquire(model, excluded, controller.signal);
         }
         excluded.add(lease.id);
         const target = `${lease.baseUrl}${url.pathname.slice(3)}${url.search}`;
@@ -516,7 +479,6 @@ export class ProxyHandler {
     raw = null;
     upstreamBody = null;
     request = null;
-    fingerprintRequest = null;
     const external = lease.baseUrl !== this.store.defaultUpstreamBaseUrl;
     if (external && upstream.ok) this.pool.report(lease.id, 'healthy');
     else if (!external && finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
@@ -538,7 +500,6 @@ export class ProxyHandler {
             completed ||= progress.complete;
           },
           clientAccess.outputTps,
-          lease.replaceUpstreamCache,
         );
         usage = mergeUsage(usage, streamed.usage);
         completed ||= streamed.complete;
@@ -548,7 +509,7 @@ export class ProxyHandler {
         const input = bufferedUpstreamBody ?? await upstream.text();
         const cache = cacheable && upstream.ok ? await startCache() : cacheFallback;
         copyResponseHeaders(upstream, res, cache.hit, cacheable);
-        const patched = upstream.ok ? injectUsage(input, cache.hit, cache.fingerprint.totalWeight, cacheable, lease.replaceUpstreamCache) : { data: input, usage: null };
+        const patched = upstream.ok ? injectUsage(input, cache.hit, cache.fingerprint.totalWeight, cacheable) : { data: input, usage: null };
         usage = patched.usage;
         lease.release();
         if (upstream.ok && clientAccess.outputTps && usage?.completionTokens) {
@@ -578,7 +539,7 @@ export class ProxyHandler {
     }
   }
 
-  async pipeStream(upstream, res, resolveCache, forwardUsage, injectCache, signal, onProgress, outputTps = 0, replaceUpstreamCache = false) {
+  async pipeStream(upstream, res, resolveCache, forwardUsage, injectCache, signal, onProgress, outputTps = 0) {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     const limited = Number(outputTps) > 0;
@@ -607,7 +568,7 @@ export class ProxyHandler {
         buffer = buffer.slice(end);
         const relevant = limited || /"(?:reasoning|thinking|usage)"\s*:|\[DONE\]/.test(event);
         const patched = relevant
-          ? await patchSseEvent(event, resolveCache, forwardUsage, injectCache, limited, replaceUpstreamCache)
+          ? await patchSseEvent(event, resolveCache, forwardUsage, injectCache, limited)
           : { event, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
         usage = mergeUsage(usage, patched.usage);
         if (patched.done || patched.usageOnly) complete = true;
@@ -619,7 +580,7 @@ export class ProxyHandler {
     if (buffer) {
       const relevant = limited || /"(?:reasoning|thinking|usage)"\s*:|\[DONE\]/.test(buffer);
       const patched = relevant
-        ? await patchSseEvent(buffer, resolveCache, forwardUsage, injectCache, limited, replaceUpstreamCache)
+        ? await patchSseEvent(buffer, resolveCache, forwardUsage, injectCache, limited)
         : { event: buffer, usage: null, usageOnly: false, done: false, outputCharacters: 0 };
       usage = mergeUsage(usage, patched.usage);
       if (patched.done || patched.usageOnly) complete = true;

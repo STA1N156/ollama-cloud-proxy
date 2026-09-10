@@ -3,15 +3,8 @@ const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&':
 const num = (value) => new Intl.NumberFormat('zh-CN', { notation: Number(value) >= 1_000_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(Number(value) || 0);
 const tokenM = (value) => `${((Number(value) || 0) / 1_000_000).toFixed(1)} M`;
 const exactTokens = (value) => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
-const bytes = (value) => {
-  let size = Number(value) || 0;
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let index = 0;
-  while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
-  return `${size.toFixed(index ? 1 : 0)} ${units[index]}`;
-};
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
-let state = { upstreamKeys: [], clientKeys: [], models: [], cache: {}, errorMessages: [] };
+let state = { upstreamKeys: [], clientKeys: [], models: [], errorMessages: [] };
 let currentPage = 'keys';
 const loading = new Map();
 
@@ -57,7 +50,7 @@ function renderKeys() {
   $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
     <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
     <td>${key.tierConfigurable ? `<select class="tier-select" data-upstream-tier data-id="${key.id}" aria-label="${esc(key.label)} 等级"><option value="max" ${key.tier === 'max' ? 'selected' : ''}>MAX · 5</option><option value="pro" ${key.tier === 'pro' ? 'selected' : ''}>PRO · 1</option></select>` : '<span class="muted">—</span>'}</td>
-    <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.proxyCacheEnabled}">${key.proxyCacheEnabled ? '已开启' : '未开启'}</button>` : '<span class="badge good">固定开启</span>'}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.concurrencyLimit == null ? '不限' : key.concurrencyLimit}${key.enabled ? '' : ' · 暂停'}</td>
+    <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.proxyCacheEnabled}">${key.proxyCacheEnabled ? '已开启' : '未开启'}</button>` : '<span class="badge">官方缓存</span>'}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.concurrencyLimit == null ? '不限' : key.concurrencyLimit}${key.enabled ? '' : ' · 暂停'}</td>
     <td><div class="row-actions"><button data-action="test-upstream" data-id="${key.id}">测试</button><button data-action="toggle-upstream" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-upstream" data-id="${key.id}">删除</button></div></td>
   </tr>`).join('') : '<tr><td class="empty" colspan="8">请先导入一个上游 API 通道</td></tr>';
 
@@ -73,19 +66,6 @@ function renderKeys() {
   $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
 }
 
-function renderCache() {
-  $('#cache-entries').textContent = num(state.cache.entries);
-  $('#cache-size').textContent = bytes(state.cache.indexedBytes);
-  $('#rp-cache-toggle').checked = Boolean(state.cache.rpEnabled);
-  $('#rp-cache-status').textContent = state.cache.rpEnabled ? '开启' : '关闭';
-  $('#rp-cache-note').textContent = `已储存 ${num(state.cache.rpEntries)} 个分块 · 1 小时过期 · 上限 ${bytes(state.cache.limitBytes)}`;
-  $('#sticky-routing-toggle').checked = Boolean(state.cache.stickyEnabled);
-  $('#sticky-routing-status').textContent = state.cache.stickyEnabled ? '开启' : '关闭';
-  $('#sticky-routing-note').textContent = state.cache.stickyEnabled
-    ? `${num(state.cache.stickyEntries)} 个对话锚点 · 1 小时无请求过期`
-    : '按完整对话前缀识别同一会话';
-}
-
 function renderModelMeta() {
   const latest = state.models.reduce((max, model) => Math.max(max, model.synced_at || 0), 0);
   const modelCount = new Set(state.models.map((model) => model.model || model.name)).size;
@@ -97,7 +77,6 @@ function render(page = currentPage) {
   if (page === 'keys') renderKeys();
   else if (page === 'models') { renderModels(); renderModelMeta(); }
   else if (page === 'usage') renderUsage();
-  else if (page === 'cache') renderCache();
   else if (page === 'settings') renderSettings();
 }
 
@@ -171,7 +150,6 @@ async function load(page = currentPage, force = false) {
     keys: '/admin/api/keys',
     models: '/admin/api/models',
     usage: `/admin/api/usage${force ? '?refresh=1' : ''}`,
-    cache: '/admin/api/cache',
     settings: '/admin/api/error-messages',
   }[page];
   const job = api(endpoint).then((data) => {
@@ -202,7 +180,7 @@ $('#nav').addEventListener('click', (event) => {
   document.querySelectorAll('#nav button').forEach((item) => item.classList.toggle('active', item === button));
   document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
   $(`#page-${currentPage}`).classList.remove('hidden');
-  $('#page-title').textContent = { keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存账本', settings: '错误提示设置' }[currentPage];
+  $('#page-title').textContent = { keys: '密钥管理', models: '模型目录', usage: 'Token 用量', settings: '错误提示设置' }[currentPage];
   $('#clear-usage').classList.toggle('hidden', currentPage === 'usage' || currentPage === 'settings');
   load(currentPage).catch(() => {});
 });
@@ -326,31 +304,6 @@ $('#clear-usage').addEventListener('click', async (event) => {
     toast('统计数据已清空');
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 });
-$('#rp-cache-toggle').addEventListener('change', async (event) => {
-  const input = event.currentTarget;
-  input.disabled = true;
-  try {
-    await api('/admin/api/cache/rp', { method: 'PATCH', body: JSON.stringify({ enabled: input.checked }) });
-    toast(input.checked ? 'RP 缓存已开启' : 'RP 缓存已关闭');
-    await load('cache');
-  } catch (error) {
-    toast(error.message);
-    await load('cache');
-  } finally { input.disabled = false; }
-});
-$('#sticky-routing-toggle').addEventListener('change', async (event) => {
-  const input = event.currentTarget;
-  input.disabled = true;
-  try {
-    await api('/admin/api/cache/sticky', { method: 'PATCH', body: JSON.stringify({ enabled: input.checked }) });
-    toast(input.checked ? '粘性路由已开启' : '粘性路由已关闭');
-    await load('cache');
-  } catch (error) {
-    toast(error.message);
-    await load('cache');
-  } finally { input.disabled = false; }
-});
-$('#clear-cache').addEventListener('click', async () => { if (confirm('确定清空全部缓存前缀和 RP 分块吗？')) { await api('/admin/api/cache', { method: 'DELETE' }); toast('缓存账本已清空'); await load('cache'); } });
 $('#refresh').addEventListener('click', () => load(currentPage, true));
 $('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });
 $('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });

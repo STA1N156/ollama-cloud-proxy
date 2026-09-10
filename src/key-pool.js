@@ -37,16 +37,6 @@ const updateQuotaHistory = (history, usage, at, maxMs) => {
   return estimateQuotaExhaustion(history, maxMs);
 };
 
-const STICKY_TTL_MS = 60 * 60_000;
-const MAX_STICKY_ROUTES = 50_000;
-const stickyRoute = (value) => {
-  if (!value) return null;
-  if (typeof value === 'string') return { lookupKeys: [value], rememberKey: value };
-  const lookupKeys = Array.isArray(value.lookupKeys) ? value.lookupKeys.filter(Boolean) : [];
-  const rememberKey = value.rememberKey || lookupKeys[0];
-  return rememberKey ? { lookupKeys, rememberKey } : null;
-};
-
 export class KeyPool {
   constructor(store, reportHealth) {
     this.store = store;
@@ -54,8 +44,6 @@ export class KeyPool {
     this.keys = new Map();
     this.schedules = new Map();
     this.waiters = new Set();
-    this.stickyEnabled = store.stickyRoutingEnabled();
-    this.stickyRoutes = new Map();
     this.generation = 0;
     this.reload();
   }
@@ -71,7 +59,7 @@ export class KeyPool {
     const seen = new Set();
     for (const row of fresh) {
       seen.add(row.id);
-      const current = this.keys.get(row.id) || { inFlight: 0, stickyGeneration: 0 };
+      const current = this.keys.get(row.id) || { inFlight: 0 };
       Object.assign(current, row);
       this.keys.set(row.id, current);
     }
@@ -88,26 +76,10 @@ export class KeyPool {
     return !this.hasModels || this.modelsBySource.get(key.base_url)?.has(model);
   }
 
-  tryAcquire(model, excluded, sourceUrl, stickyValue) {
+  tryAcquire(model, excluded, sourceUrl) {
     const keys = this.sortedKeys;
     const eligible = keys.filter((key) => this.eligible(key, model, excluded, sourceUrl));
     if (!eligible.length) return null;
-    const identity = this.stickyEnabled ? stickyRoute(stickyValue) : null;
-    const matchedKey = identity?.lookupKeys.find((key) => this.stickyRoutes.has(key));
-    const route = matchedKey ? this.stickyRoutes.get(matchedKey) : null;
-    const bound = route && route.expiresAt > Date.now()
-      ? this.keys.get(route.keyId)
-      : null;
-    const sticky = bound && bound.stickyGeneration === route.generation && this.eligible(bound, model, excluded, sourceUrl)
-      ? bound
-      : null;
-    if (matchedKey && !sticky) this.stickyRoutes.delete(matchedKey);
-    if (sticky && sticky.inFlight < this.concurrencyLimit(sticky)) {
-      this.rememberSticky(identity.rememberKey, sticky);
-      return this.lease(sticky);
-    }
-    if (sticky) this.rememberSticky(identity.rememberKey, sticky);
-
     const ready = eligible.filter((key) => key.inFlight < this.concurrencyLimit(key));
     const available = this.quotaBalanced(ready);
     if (!available.length) return undefined;
@@ -129,7 +101,6 @@ export class KeyPool {
       }
     }
     schedule.set(selected.id, best - totalWeight);
-    if (identity && !sticky) this.rememberSticky(identity.rememberKey, selected);
     return this.lease(selected);
   }
 
@@ -141,8 +112,7 @@ export class KeyPool {
       label: selected.label,
       baseUrl: selected.base_url,
       secret: selected.secret,
-      useProxyCache: selected.base_url === this.store.defaultUpstreamBaseUrl || selected.use_proxy_cache,
-      replaceUpstreamCache: selected.base_url !== this.store.defaultUpstreamBaseUrl && selected.use_proxy_cache,
+      useProxyCache: selected.base_url !== this.store.defaultUpstreamBaseUrl && selected.use_proxy_cache,
       release: () => {
         if (released) return;
         released = true;
@@ -168,39 +138,10 @@ export class KeyPool {
     return keys.filter((key) => key.base_url !== this.store.defaultUpstreamBaseUrl || !fresh.includes(key) || balanced.has(key.id));
   }
 
-  rememberSticky(stickyKey, key) {
-    this.stickyRoutes.delete(stickyKey);
-    this.stickyRoutes.set(stickyKey, {
-      keyId: key.id,
-      generation: key.stickyGeneration,
-      expiresAt: Date.now() + STICKY_TTL_MS,
-    });
-    while (this.stickyRoutes.size > MAX_STICKY_ROUTES) this.stickyRoutes.delete(this.stickyRoutes.keys().next().value);
-  }
-
-  setStickyEnabled(enabled) {
-    this.stickyEnabled = Boolean(enabled);
-    this.store.setStickyRoutingEnabled(this.stickyEnabled);
-    if (!this.stickyEnabled) this.stickyRoutes.clear();
-    return this.stickyStats();
-  }
-
-  clearSticky() {
-    this.stickyRoutes.clear();
-  }
-
-  stickyStats() {
-    const stamp = Date.now();
-    for (const [key, route] of this.stickyRoutes) {
-      if (route.expiresAt <= stamp || !this.keys.has(route.keyId)) this.stickyRoutes.delete(key);
-    }
-    return { stickyEnabled: this.stickyEnabled, stickyEntries: this.stickyRoutes.size, stickyTtlMs: STICKY_TTL_MS };
-  }
-
-  async acquire(model, excluded = new Set(), signal, sourceUrl, stickyKey) {
+  async acquire(model, excluded = new Set(), signal, sourceUrl) {
     while (true) {
       const generation = this.generation;
-      const lease = this.tryAcquire(model, excluded, sourceUrl, stickyKey);
+      const lease = this.tryAcquire(model, excluded, sourceUrl);
       if (lease) return lease;
       if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : this.store.errorMessage('api_unavailable'));
       await this.wait(signal, generation, model, excluded, sourceUrl);
@@ -244,7 +185,6 @@ export class KeyPool {
     key.last_error = message;
     key.cooldown_until = cooldownUntil;
     if (status !== 'healthy') {
-      key.stickyGeneration += 1;
       for (const schedule of this.schedules.values()) schedule.delete(id);
     }
     if (changed) {
@@ -286,12 +226,12 @@ export class KeyPool {
   }
 
   snapshot() {
-    return [...this.keys.values()].map(({ secret, secret_hash, quotaHistory, stickyGeneration, ...key }) => ({
+    return [...this.keys.values()].map(({ secret, secret_hash, quotaHistory, ...key }) => ({
       ...key,
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,
       concurrencyLimit: key.base_url === this.store.defaultUpstreamBaseUrl ? (key.tier === 'pro' ? 3 : 10) : null,
-      proxyCacheEnabled: key.base_url === this.store.defaultUpstreamBaseUrl || key.use_proxy_cache,
+      proxyCacheEnabled: key.base_url !== this.store.defaultUpstreamBaseUrl && key.use_proxy_cache,
       proxyCacheConfigurable: key.base_url !== this.store.defaultUpstreamBaseUrl,
     }));
   }

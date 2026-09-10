@@ -87,19 +87,8 @@ export class Store {
         FOREIGN KEY (hash) REFERENCES prompt_cache(hash) ON DELETE CASCADE
       );
 
-      CREATE TABLE IF NOT EXISTS prompt_cache_rp (
-        hash TEXT PRIMARY KEY,
-        endpoint TEXT NOT NULL,
-        weight INTEGER NOT NULL,
-        copies INTEGER NOT NULL DEFAULT 1,
-        expires_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS cache_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
+      DROP TABLE IF EXISTS prompt_cache_rp;
+      DROP TABLE IF EXISTS cache_settings;
 
       CREATE TABLE IF NOT EXISTS error_settings (
         key TEXT PRIMARY KEY,
@@ -133,11 +122,7 @@ export class Store {
 
       CREATE INDEX IF NOT EXISTS idx_cache_expiry ON prompt_cache(expires_at);
       CREATE INDEX IF NOT EXISTS idx_cache_updated ON prompt_cache(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_cache_rp_expiry ON prompt_cache_rp(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_cache_rp_updated ON prompt_cache_rp(updated_at);
     `);
-    this.db.prepare("INSERT OR IGNORE INTO cache_settings(key, value) VALUES ('rp_enabled', '0')").run();
-    this.db.prepare("INSERT OR IGNORE INTO cache_settings(key, value) VALUES ('sticky_routing_enabled', '0')").run();
     const clientColumns = this.db.prepare('PRAGMA table_info(client_keys)').all();
     if (!clientColumns.some((column) => column.name === 'token_secret')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN token_secret TEXT NOT NULL DEFAULT ''");
@@ -230,15 +215,6 @@ export class Store {
 
   close() {
     this.db.close();
-  }
-
-  stickyRoutingEnabled() {
-    return this.db.prepare("SELECT value FROM cache_settings WHERE key='sticky_routing_enabled'").get()?.value === '1';
-  }
-
-  setStickyRoutingEnabled(enabled) {
-    this.db.prepare("INSERT INTO cache_settings(key, value) VALUES ('sticky_routing_enabled', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-      .run(enabled ? '1' : '0');
   }
 
   errorMessage(key, variables) {

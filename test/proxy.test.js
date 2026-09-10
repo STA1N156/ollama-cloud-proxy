@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { CacheLedger } from '../src/cache.js';
 import { KeyPool } from '../src/key-pool.js';
 import { ModelSync } from '../src/model-sync.js';
-import { contentRoutingIdentity, injectUsage, normalizeOllamaResponsesBody, ProxyHandler, routingSessionKey } from '../src/proxy.js';
+import { injectUsage, normalizeOllamaResponsesBody, ProxyHandler } from '../src/proxy.js';
 import { Store } from '../src/store.js';
 import { UsageLedger } from '../src/usage.js';
 import { tempConfig } from '../test-support/helpers.js';
@@ -16,19 +16,6 @@ const listen = async (server) => {
   return `http://127.0.0.1:${server.address().port}`;
 };
 const cache = (hit, totalWeight = 1) => async () => ({ hit, fingerprint: { totalWeight } });
-
-test('粘性会话标识优先读取请求头并隔离下游密钥和模型', () => {
-  const fromUser = routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-a');
-  assert.equal(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-a'));
-  assert.notEqual(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 2, 'model-a'));
-  assert.notEqual(fromUser, routingSessionKey({}, { user: 'roleplay-1' }, 1, 'model-b'));
-  assert.notEqual(fromUser, routingSessionKey({ 'x-proxy-session': 'header-session' }, { user: 'roleplay-1' }, 1, 'model-a'));
-  assert.equal(routingSessionKey({}, {}, 1, 'model-a'), '');
-  const content = contentRoutingIdentity({ entries: [{ hash: 'first' }, { hash: 'second' }] }, 1, 'model-a');
-  assert.deepEqual(content.lookupKeys, ['1\0model-a\0second', '1\0model-a\0first']);
-  assert.equal(content.rememberKey, content.lookupKeys[0]);
-  assert.notEqual(content.lookupKeys[0], contentRoutingIdentity({ entries: [{ hash: 'second' }] }, 2, 'model-a').lookupKeys[0]);
-});
 
 test('按 New API 标准回报缓存 token 和思考过程', () => {
   const hit = { matched: true, exact: true, weight: 10, observedTokens: 0 };
@@ -47,6 +34,20 @@ test('按 New API 标准回报缓存 token 和思考过程', () => {
   }), hit, 10).data).choices[0].message;
   assert.equal(reasoning.reasoning, '思考过程');
   assert.equal(reasoning.reasoning_content, '思考过程');
+});
+
+test('官方 usage 原样透传，不补造缓存字段，Responses 与 Chat 均兼容', () => {
+  const hit = { matched: true, exact: true, weight: 10, observedTokens: 0 };
+  for (const usage of [
+    { prompt_tokens: 80, completion_tokens: 5, total_tokens: 85 },
+    { input_tokens: 80, output_tokens: 5, total_tokens: 85, input_tokens_details: { cached_tokens: 32 } },
+  ]) {
+    for (const body of [{ usage }, { response: { usage } }]) {
+      const result = injectUsage(JSON.stringify(body), hit, 10, false);
+      assert.deepEqual(JSON.parse(result.data), body);
+      assert.equal(result.usage.cachedTokens, usage.input_tokens_details?.cached_tokens || 0);
+    }
+  }
 });
 
 test('Ollama Responses 将不支持的搜索调用项转换为普通消息', () => {
@@ -185,58 +186,6 @@ test('零限速正文不等待缓存线程，最终 usage 仍注入命中 token'
   assert.match(writes.join(''), /"cached_tokens":50/);
 });
 
-test('粘性指纹等待超时后继续复用同一任务计算缓存', async (t) => {
-  const fingerprint = {
-    endpoint: '/v1/chat/completions',
-    entries: [{ hash: 'same-content', weight: 10 }],
-    totalWeight: 10,
-  };
-  let finishFingerprint;
-  const fingerprintReady = new Promise((resolve) => { finishFingerprint = resolve; });
-  const calls = { fingerprint: 0, lookup: 0, resolve: 0, register: 0 };
-  const ledger = {
-    fingerprint() { calls.fingerprint += 1; return fingerprintReady; },
-    lookup(value) {
-      calls.lookup += 1;
-      assert.equal(value, fingerprint);
-      return Promise.resolve({ matched: false, exact: false, weight: 0, observedTokens: 0 });
-    },
-    resolve() { calls.resolve += 1; throw new Error('不应重复计算指纹'); },
-    register() { calls.register += 1; },
-  };
-  const upstreamServer = http.createServer(async (req, res) => {
-    for await (const _ of req) { /* 读取请求体 */ }
-    finishFingerprint(fingerprint);
-    res.setHeader('content-type', 'application/json');
-    res.end('{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}');
-  });
-  const upstreamUrl = await listen(upstreamServer);
-  const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1` });
-  const store = new Store(config);
-  store.addUpstreamKey('upstream', 'upstream-key');
-  store.addClientKey('client', 'client-key');
-  store.setStickyRoutingEnabled(true);
-  const usage = new UsageLedger(store);
-  const pool = new KeyPool(store, (event) => usage.reportHealth(event));
-  const proxy = new ProxyHandler(config, store, pool, ledger, usage);
-  const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
-  const proxyUrl = await listen(proxyServer);
-  t.after(async () => {
-    await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
-    await usage.close(); store.close(); config.cleanup();
-  });
-
-  const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { authorization: 'Bearer client-key', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'model-a', messages: [{ role: 'user', content: 'hello' }] }),
-  });
-  assert.equal(response.status, 200);
-  await response.json();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, { fingerprint: 1, lookup: 1, resolve: 0, register: 1 });
-});
-
 test('白名单并发模式超额时立即返回指定503，完成后释放名额', async (t) => {
   let received = 0;
   const upstreamServer = http.createServer(async (req, res) => {
@@ -293,8 +242,13 @@ test('未限制并发的下游密钥仍统计实时并发', () => {
   assert.equal(proxy.clientConcurrency(7), 0);
 });
 
-test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 usage', async (t) => {
+test('Ollama 401 自动换钥，非流式和流式官方 usage 透传且不访问本地缓存', async (t) => {
   const received = [];
+  const officialUsage = (prompt) => ({
+    prompt_tokens: prompt, completion_tokens: 2, total_tokens: prompt + 2,
+    prompt_tokens_details: { cached_tokens: prompt - 100, audio_tokens: 4 },
+    completion_tokens_details: { reasoning_tokens: 1 },
+  });
   const upstreamServer = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -308,7 +262,9 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     if (body.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write('data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}],"usage":null}\n\n');
-      res.write(`data: {"id":"x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":${prompt},"completion_tokens":2,"total_tokens":${prompt + 2}}}\n\n`);
+      if (body.stream_options?.include_usage) {
+        res.write(`data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', choices: [], usage: officialUsage(prompt) })}\n\n`);
+      }
       if (body.metadata?.disconnect_after_usage) {
         setTimeout(() => res.end('data: [DONE]\n\n'), 100);
         return;
@@ -319,7 +275,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
     const response = JSON.stringify({
       id: 'x', object: 'chat.completion', model: body.model,
       choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: prompt, completion_tokens: 2, total_tokens: prompt + 2 },
+      usage: officialUsage(prompt),
     });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(response);
@@ -329,7 +285,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1` });
   const store = new Store(config);
   store.addUpstreamKey('bad', 'bad-key');
-  store.addUpstreamKey('good', 'good-key');
+  store.addUpstreamKey('good', 'good-key', config.upstreamBaseUrl, true);
   store.addClientKey('client', 'client-key');
   store.addClientKey('slow', 'slow-key', 20);
   store.addClientKey('site', 'site-key', 0, 'https://sta1n156.github.io');
@@ -337,7 +293,12 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
   const usage = new UsageLedger(store);
   const pool = new KeyPool(store, (event) => usage.reportHealth(event));
   const ledger = new CacheLedger(store, config.cacheTtlMs);
-  const proxy = new ProxyHandler(config, store, pool, ledger, usage);
+  const cacheCalls = [];
+  const forbiddenCache = {
+    resolve() { cacheCalls.push('resolve'); throw new Error('Ollama 不应计算本地缓存'); },
+    register() { cacheCalls.push('register'); },
+  };
+  const proxy = new ProxyHandler(config, store, pool, forbiddenCache, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
   const proxyUrl = await listen(proxyServer);
   t.after(async () => {
@@ -390,8 +351,9 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
 
   const firstResponse = await call({ ...base, model: 'model-a', stream: false });
   const first = await firstResponse.json();
-  assert.equal(firstResponse.headers.get('x-proxy-cache'), 'MISS');
-  assert.equal(first.usage.prompt_tokens_details.cached_tokens, 0);
+  assert.equal(firstResponse.headers.get('x-proxy-cache'), 'BYPASS');
+  assert.equal(firstResponse.headers.get('x-proxy-cache-source'), 'upstream');
+  assert.deepEqual(first.usage, officialUsage(100));
   assert.equal(received[0].auth, 'Bearer bad-key');
   assert.equal(received[1].auth, 'Bearer good-key');
   assert.deepEqual(received[1].body.tools, base.tools);
@@ -399,14 +361,24 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
 
   const secondResponse = await call({ ...base, model: 'model-b', temperature: 1, stream: false });
   const second = await secondResponse.json();
-  assert.equal(secondResponse.headers.get('x-proxy-cache'), 'HIT');
-  assert.equal(secondResponse.headers.get('x-proxy-cache-type'), 'exact');
-  assert.equal(second.usage.prompt_tokens_details.cached_tokens, 120);
+  assert.equal(secondResponse.headers.get('x-proxy-cache'), 'BYPASS');
+  assert.equal(secondResponse.headers.get('x-proxy-cache-type'), null);
+  assert.deepEqual(second.usage, officialUsage(120));
 
   const streamResponse = await call({ ...base, model: 'model-b', stream: true, stream_options: { include_usage: true } });
   const streamText = await streamResponse.text();
-  assert.match(streamText, /"cached_tokens":130/);
+  const streamUsage = streamText.split('\n').filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice(6))).find((chunk) => chunk.usage)?.usage;
+  assert.deepEqual(streamUsage, officialUsage(130));
   assert.match(streamText, /data: \[DONE\]/);
+  assert.equal(received.at(-1).body.stream_options.include_usage, true);
+
+  const repeated = await call({ ...base, model: 'model-a' });
+  assert.deepEqual((await repeated.json()).usage, officialUsage(100));
+  const hiddenUsageResponse = await call({ ...base, model: 'model-b', stream: true });
+  const hiddenUsageText = await hiddenUsageResponse.text();
+  assert.doesNotMatch(hiddenUsageText, /"prompt_tokens"/);
+  assert.match(hiddenUsageText, /data: \[DONE\]/);
   assert.equal(received.at(-1).body.stream_options.include_usage, true);
 
   await new Promise((resolve, reject) => {
@@ -415,7 +387,7 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
       headers: { authorization: 'Bearer client-key', 'content-type': 'application/json' },
     }, (response) => {
       response.on('data', (chunk) => {
-        if (chunk.includes('"usage"')) {
+        if (chunk.includes('"prompt_tokens"')) {
           response.destroy();
           resolve();
         }
@@ -431,15 +403,17 @@ test('401 自动换钥，并把跨模型缓存 token 注入非流式和流式 us
 
   for (let index = 0; index < 20; index += 1) {
     await usage.flush();
-    if (Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens) === 390) break;
+    if (Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens) === 120) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens), 390);
+  assert.equal(Number(store.listClientKeys().find((key) => key.label === 'client').cached_tokens), 120);
 
   const slowStarted = Date.now();
   const slowResponse = await call({ ...base, model: 'model-b', stream: false }, 'slow-key');
   await slowResponse.json();
   assert.ok(Date.now() - slowStarted >= 80);
+  assert.deepEqual(cacheCalls, []);
+  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache').get().count, 0);
 });
 
 test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并支持减速', async (t) => {
@@ -515,7 +489,8 @@ test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并�
   assert.ok(Date.now() - started >= 80);
   assert.match(output, /"cached_tokens":3/);
   assert.equal(streamed.headers.get('x-proxy-cache-source'), 'upstream');
-  assert.equal((await ledger.stats()).entries, 0);
+  await ledger.flush();
+  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache').get().count, 0);
 
   store.setUpstreamProxyCache(externalKeyId, true);
   pool.reload();
@@ -523,9 +498,8 @@ test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并�
   const miss = await missResponse.json();
   assert.equal(miss.usage.prompt_tokens_details.cached_tokens, 0);
   assert.equal(missResponse.headers.get('x-proxy-cache-source'), 'proxy-simulated');
-  for (let index = 0; index < 20 && (await ledger.stats()).entries === 0; index += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  await ledger.flush();
+  assert.ok(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache').get().count > 0);
   const hitResponse = await request('proxy-cache', true);
   const hit = await hitResponse.text();
   assert.match(hit, /"cached_tokens":10/);

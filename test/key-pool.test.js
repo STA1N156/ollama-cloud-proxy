@@ -37,75 +37,19 @@ test('同一模型在健康密钥间公平轮询', async (t) => {
   assert.deepEqual(ids, [1, 2, 1, 2]);
 });
 
-test('粘性路由固定已有会话，新会话补偿额度差且并发溢出不改归属', async (t) => {
+test('仅第三方密钥可启用本地缓存覆盖，旧 Ollama 配置不再生效', (t) => {
   const config = tempConfig();
   const store = new Store(config);
-  const firstId = store.addUpstreamKey('A', 'key-a');
-  const secondId = store.addUpstreamKey('B', 'key-b');
-  store.setStickyRoutingEnabled(true);
+  const ollamaId = store.addUpstreamKey('Ollama', 'key-a', config.upstreamBaseUrl, true);
+  const externalId = store.addUpstreamKey('External', 'key-b', 'https://external.example/v1', true);
   const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
-
-  let lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
-  assert.equal(lease.id, firstId);
-  lease.release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
-  assert.equal(lease.id, firstId);
-  lease.release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-b');
-  assert.equal(lease.id, secondId);
-  lease.release();
-
-  pool.updateQuota(firstId, { session: { usage: 0.1 }, weekly: { usage: 0.8 } });
-  pool.updateQuota(secondId, { session: { usage: 0.1 }, weekly: { usage: 0.2 } });
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
-  assert.equal(lease.id, firstId);
-  lease.release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-c');
-  assert.equal(lease.id, secondId);
-  lease.release();
-
-  const occupied = [];
-  for (let index = 0; index < 10; index += 1) occupied.push(await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a'));
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
-  assert.equal(lease.id, secondId);
-  lease.release();
-  occupied[0].release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
-  assert.equal(lease.id, firstId);
-  lease.release();
-  occupied.slice(1).forEach((item) => item.release());
-
-  pool.updateQuota(firstId, { session: { usage: 0.95 }, weekly: { usage: 0.8 } });
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, 'session-a');
-  assert.equal(lease.id, secondId);
-  lease.release();
-
-  assert.deepEqual(pool.stickyStats(), { stickyEnabled: true, stickyEntries: 3, stickyTtlMs: 3_600_000 });
-  assert.deepEqual(pool.setStickyEnabled(false), { stickyEnabled: false, stickyEntries: 0, stickyTtlMs: 3_600_000 });
-});
-
-test('追加和分支对话通过最长内容前缀继承粘性绑定', async (t) => {
-  const config = tempConfig();
-  const store = new Store(config);
-  store.addUpstreamKey('A', 'key-a');
-  store.addUpstreamKey('B', 'key-b');
-  store.setStickyRoutingEnabled(true);
-  const pool = new KeyPool(store);
-  t.after(() => { store.close(); config.cleanup(); });
-
-  let lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['turn-1'], rememberKey: 'turn-1' });
-  assert.equal(lease.id, 1);
-  lease.release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['turn-2', 'turn-1'], rememberKey: 'turn-2' });
-  assert.equal(lease.id, 1);
-  lease.release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['branch-2', 'turn-1'], rememberKey: 'branch-2' });
-  assert.equal(lease.id, 1);
-  lease.release();
-  lease = await pool.acquire('model-a', new Set(), undefined, undefined, { lookupKeys: ['unrelated'], rememberKey: 'unrelated' });
-  assert.equal(lease.id, 2);
-  lease.release();
+  assert.deepEqual(pool.snapshot().map((key) => [key.proxyCacheConfigurable, key.proxyCacheEnabled]), [[false, false], [true, true]]);
+  for (const [id, enabled] of [[ollamaId, false], [externalId, true]]) {
+    const lease = pool.lease(pool.keys.get(id));
+    assert.equal(lease.useProxyCache, enabled);
+    lease.release();
+  }
 });
 
 test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {

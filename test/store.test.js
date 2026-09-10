@@ -21,15 +21,27 @@ test('错误提示可修改、持久化并一键恢复默认', (t) => {
   assert.equal(store.errorMessage('api_unavailable'), 'API 暂时不可用');
 });
 
-test('粘性路由开关默认关闭并持久化', (t) => {
+test('升级清理旧分块缓存和路由设置，保留第三方基础缓存与密钥', (t) => {
   const config = tempConfig();
   let store = new Store(config);
   t.after(() => { store.close(); config.cleanup(); });
-  assert.equal(store.stickyRoutingEnabled(), false);
-  store.setStickyRoutingEnabled(true);
+  const keyId = store.addUpstreamKey('External', 'external-key', 'https://example.com/v1', true);
+  store.db.exec(`
+    CREATE TABLE cache_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO cache_settings VALUES ('rp_enabled', '1'), ('sticky_routing_enabled', '1');
+    CREATE TABLE prompt_cache_rp (hash TEXT PRIMARY KEY, expires_at INTEGER);
+    CREATE INDEX idx_cache_rp_expiry ON prompt_cache_rp(expires_at);
+    INSERT INTO prompt_cache_rp VALUES ('old-rp', 1);
+    INSERT INTO prompt_cache VALUES ('prefix', '/v1/chat/completions', 100, 9999999999999, 1);
+    INSERT INTO prompt_cache_tokens VALUES ('prefix', 'model-a', 80);
+  `);
   store.close();
   store = new Store(config);
-  assert.equal(store.stickyRoutingEnabled(), true);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE name IN ('cache_settings', 'prompt_cache_rp', 'idx_cache_rp_expiry')").get().count, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache').get().count, 1);
+  assert.equal(store.db.prepare('SELECT tokens FROM prompt_cache_tokens').get().tokens, 80);
+  assert.equal(store.getUpstreamKey(keyId).use_proxy_cache, true);
+  assert.equal(store.getUpstreamKey(keyId).secret, 'external-key');
 });
 
 test('旧白名单2自动合并到统一白名单', (t) => {

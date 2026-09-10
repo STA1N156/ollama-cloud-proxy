@@ -1,8 +1,8 @@
 # Ollama Cloud Proxy
 
-面向 Ollama Cloud 和外部 OpenAI 兼容 API 的转发服务。支持多通道模型路由、公平轮询、流式工具调用透传、模型同步、Token 统计，以及 Ollama Cloud 一小时硬盘缓存账本生成的 `cached_tokens`。
+面向 Ollama Cloud 和外部 OpenAI 兼容 API 的转发服务。支持多通道模型路由、公平轮询、流式工具调用透传、模型同步和 Token 统计。Ollama Cloud 直接透传官方缓存用量；第三方通道可逐个开启基础本地前缀缓存覆盖。
 
-> `cached_tokens` 是本转发层生成的展示与下游计费数据，不代表 Ollama Cloud 官方缓存，也不会减少 Ollama Cloud 官方额度。
+> 仅在第三方通道开启“代理缓存”时，本转发层才生成用于展示与下游计费的模拟 `cached_tokens`，这不会减少该第三方的上游实际用量。Ollama Cloud 不生成本地缓存数据。
 
 ## 功能
 
@@ -12,8 +12,7 @@
 - 401/403 自动停用，429 按 `Retry-After` 冷却，临时错误自动换钥重试
 - 仅当 HTTP 400 响应包含 `Internal Server Error` 时额外重试两次，普通参数错误不会重试
 - 同时兼容 Ollama `/api/tags` 与 OpenAI `/v1/models`，后台按 API 地址分组，下游返回全部可用模型
-- 跨模型、跨上游密钥、跨下游密钥的一小时提示词前缀命中
-- 可选内存粘性路由，同一会话优先沿用上游密钥并始终服从额度、并发和健康状态
+- 第三方代理缓存支持跨模型、跨上游密钥、跨下游密钥的一小时提示词前缀命中
 - 每个下游访问密钥可独立设置输出 Token 减速器，`0` 表示不限速
 - 每个下游访问密钥可独立启用来源白名单，默认不启用；支持 RP-Hub 源站和 Codex Router
 - 外部 API 可逐个选择直接透传上游缓存，或使用代理缓存替换上游 `cached_tokens`；错误仍不重试并原样透传
@@ -72,7 +71,9 @@ const response = await client.chat.completions.create({
 
 ## 缓存命中规则
 
-默认 Ollama Cloud 通道固定使用本地缓存。外部 OpenAI 兼容通道默认跳过本地缓存并直接使用上游 usage，可在后台逐个开启代理缓存；开启后即使上游没有缓存功能也能生成命中量，并以代理计算的 `cached_tokens` 替换上游缓存统计。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。
+Ollama Cloud 完全跳过本地缓存计算、查询和写入，`usage` 中的官方缓存字段原样透传，官方未返回的缓存字段不会凭空补充。请求始终按额度均摊和模型权重路由，不再绑定会话。
+
+第三方 OpenAI 兼容通道默认也透传上游 usage，可在密钥页逐个开启“代理缓存”。开启后仅使用基础前缀命中，以代理计算的 `cached_tokens` 替换上游缓存统计；不再进行 RP 分块。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。以下规则仅适用于开启代理缓存的第三方通道：
 
 - 完整提示词相同：`cached_tokens` 等于本次真实 `prompt_tokens`。
 - 当前请求在旧请求后继续追加消息：最长相同前缀命中。
@@ -89,9 +90,9 @@ X-Proxy-Cache-Type: exact | prefix
 X-Proxy-Cache-Source: proxy-simulated
 ```
 
-未开启代理缓存的外部通道返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`；开启后与 Ollama 通道一样返回代理缓存标识。
+Ollama Cloud 和未开启代理缓存的第三方通道返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`。`BYPASS` 仅表示跳过本地缓存，不代表官方缓存未命中；具体命中量以响应中的 `usage` 为准。
 
-Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses API 写入 `usage.input_tokens_details.cached_tokens`。流式 Chat Completions 只有在客户端设置 `stream_options.include_usage=true` 时才向下游发送最终 usage 数据块。
+第三方代理缓存在 Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`，在 Responses API 写入 `usage.input_tokens_details.cached_tokens`。流式 Chat Completions 会请求上游返回 usage 用于累计统计，但只有客户端设置 `stream_options.include_usage=true` 时才向下游发送最终 usage 数据块。
 
 这两个字段是 New API 当前读取的标准缓存用量字段，因此把本服务配置为 New API 的 OpenAI 渠道时，命中量会进入 New API 的缓存 Token 计费流程。
 
@@ -105,7 +106,7 @@ Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses 
 | `OLLAMA_API_KEYS` | 空 | 可选，逗号或换行分隔的上游密钥 |
 | `PROXY_API_KEYS` | 空 | 可选，逗号或换行分隔的下游密钥 |
 | `ALLOW_ANONYMOUS` | `false` | 是否允许无下游密钥调用 |
-| `CACHE_TTL` | `1h` | 缓存有效期 |
+| `CACHE_TTL` | `1h` | 第三方基础本地缓存有效期 |
 | `MODEL_SYNC_INTERVAL` | `10m` | 模型同步间隔 |
 | `QUOTA_SYNC_INTERVAL` | `2m` | Ollama 官方额度刷新间隔 |
 | `QUOTA_SYNC_URL` | `https://ollama.com/api/usage` | Ollama 官方额度接口 |
@@ -118,7 +119,7 @@ Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`；Responses 
 
 Token 减速器设置在管理后台的“下游访问密钥”列表中，对 Ollama Cloud 和所有外部 API 通道统一生效。流式响应保持与上游同步，上游每返回一段就向下游发送一段，只在片段之间按字符数补充延时，因此是近似 token/s。设为 `0` 时跳过字数统计和限速计时，直接透传；非流式响应会按完成 token 数延迟整包返回。
 
-粘性路由在缓存页面开启，默认关闭。代理优先读取 `X-Proxy-Session`、`conversation_id`、`session_id`、`metadata` 中的会话字段或 `user`；没有显式标识时，复用缓存工作线程对完整对话进行连续哈希，并从最新内容向前查找最长已知前缀。对话继续追加消息后仍会继承原绑定，不需要特定客户端配合。绑定只保存在内存中，一小时无请求自动过期，最多保留五万个对话锚点；内容指纹超过 50ms 未返回时，本次请求直接走原路由，避免拖慢首字。已有会话不会因周额度差被迁移，周额度只决定新会话首次分配；绑定密钥并发暂满时，本次请求临时溢出但不修改归属，下一次仍返回原密钥。只有五小时额度达到 95%、暂停、失效、冷却或不支持模型时才重新绑定。关闭时跳过会话哈希和粘性判断，不增加请求路径负担。
+后台不再提供缓存页面、粘性路由或 RP 分块开关。升级会自动删除旧 RP 分块数据与相关设置，保留基础前缀账本及第三方密钥的代理缓存开关。基础缓存仍在独立工作线程中处理，默认一小时过期、最多占用 512 MB；既有前缀数据按原有效期自然淘汰。
 
 统计写入会在工作线程中批量处理，只保存下游密钥累计用量，不保存逐条请求或小时模型明细。升级后会汇总旧明细中的下游累计用量，再删除旧统计表。缓存命中计算使用独立缓存账本，不受此调整影响。额度页面根据最近多次成功刷新后的用量走势估算耗尽时间，刷新数据不足或额度没有增长时显示“暂无法估算”。
 
@@ -180,4 +181,4 @@ Zeabur 挂载持久卷后，重新部署时会有短暂中断。如果需要多�
 npm test
 ```
 
-测试覆盖缓存指纹、完整/前缀/跨模型命中、公平轮询、多 API 模型路由、外部模型同步、外部错误与 usage 透明传递、缓存旁路、Token 减速器、数据库迁移，以及非流式和 SSE 流式 `cached_tokens` 注入。
+测试覆盖基础缓存指纹、完整/前缀/跨模型命中、公平轮询、多 API 模型路由、外部模型同步、第三方缓存覆盖与错误透传、Ollama 官方 usage 透传和本地缓存旁路、Token 减速器，以及删除旧分块缓存后的数据库迁移。

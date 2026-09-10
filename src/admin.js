@@ -33,11 +33,10 @@ async function json(req) {
 const cookies = (header = '') => Object.fromEntries(header.split(';').map((item) => item.trim().split('=').map(decodeURIComponent)).filter((item) => item.length === 2));
 
 export class AdminHandler {
-  constructor(config, store, pool, ledger, usage, modelSync, quotaSync, proxy) {
+  constructor(config, store, pool, usage, modelSync, quotaSync, proxy) {
     this.config = config;
     this.store = store;
     this.pool = pool;
-    this.ledger = ledger;
     this.usage = usage;
     this.modelSync = modelSync;
     this.quotaSync = quotaSync;
@@ -180,9 +179,6 @@ export class AdminHandler {
         upstreamKeys: this.pool.snapshot().filter((key) => key.base_url === this.store.defaultUpstreamBaseUrl),
       });
     }
-    if (url.pathname === '/admin/api/cache' && req.method === 'GET') {
-      return send(res, 200, { cache: { ...await this.ledger.stats(), ...this.pool.stickyStats() } });
-    }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);
       const id = this.store.addUpstreamKey(String(body.label || ''), String(body.key || ''), String(body.baseUrl || ''), Boolean(body.useProxyCache), body.tier);
@@ -239,19 +235,6 @@ export class AdminHandler {
     if (url.pathname === '/admin/api/models/test' && req.method === 'POST') {
       const body = await json(req);
       return send(res, 200, await this.testModel(String(body.model || ''), String(body.sourceUrl || '')));
-    }
-    if (url.pathname === '/admin/api/cache' && req.method === 'DELETE') {
-      await this.ledger.clear();
-      this.pool.clearSticky();
-      return send(res, 200, { ok: true });
-    }
-    if (url.pathname === '/admin/api/cache/rp' && req.method === 'PATCH') {
-      const body = await json(req);
-      return send(res, 200, await this.ledger.setRpEnabled(Boolean(body.enabled)));
-    }
-    if (url.pathname === '/admin/api/cache/sticky' && req.method === 'PATCH') {
-      const body = await json(req);
-      return send(res, 200, this.pool.setStickyEnabled(Boolean(body.enabled)));
     }
     if (url.pathname === '/admin/api/usage' && req.method === 'DELETE') {
       await this.usage.clear();
