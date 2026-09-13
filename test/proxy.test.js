@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { CacheLedger } from '../src/cache.js';
 import { KeyPool } from '../src/key-pool.js';
 import { ModelSync } from '../src/model-sync.js';
@@ -16,6 +16,18 @@ const listen = async (server) => {
   return `http://127.0.0.1:${server.address().port}`;
 };
 const cache = (hit, totalWeight = 1) => async () => ({ hit, fingerprint: { totalWeight } });
+const sseEvent = (object) => `data: ${JSON.stringify(object)}\n\n`;
+const sseObjects = (chunks) => chunks.join('').split('\n')
+  .filter((line) => line.startsWith('data:') && !line.includes('[DONE]'))
+  .map((line) => JSON.parse(line.slice(5)));
+const streamOf = (events) => ({
+  body: new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(events.join('')));
+      controller.close();
+    },
+  }),
+});
 
 test('按 New API 标准回报缓存 token 和思考过程', () => {
   const hit = { matched: true, exact: true, weight: 10, observedTokens: 0 };
@@ -116,19 +128,24 @@ test('Token 减速器与上游同步流式输出并按字数减速', async () =>
   const finishedAt = Date.now();
   assert.equal(result.usage.completionTokens, 2);
   const output = writes.map((item) => item.chunk).join('');
-  assert.match(output, /"reasoning":"思考"/);
-  assert.match(output, /"reasoning_content":"思考"/);
+  const deltas = sseObjects(writes.map((item) => item.chunk)).flatMap((event) => event.choices.map((choice) => choice.delta));
+  assert.deepEqual(deltas, [
+    { reasoning: '思', reasoning_content: '思' },
+    { reasoning: '考', reasoning_content: '考' },
+  ]);
   assert.match(output, /\[DONE\]/);
   assert.ok(writes[0].at - started < 50);
+  assert.ok(writes[1].at - writes[0].at >= 35);
   assert.ok(finishedAt - started >= 80);
 });
 
 test('Token 减速器为 0 时直接透传流式输出', async () => {
   const encoder = new TextEncoder();
+  const original = `data: {"choices":[{"delta":{"content":"${'字'.repeat(200)}"}}]}\n\ndata: [DONE]\n\n`;
   const upstream = {
     body: new ReadableStream({
       start(controller) {
-        controller.enqueue(encoder.encode(`data: {"choices":[{"delta":{"content":"${'字'.repeat(200)}"}}]}\n\ndata: [DONE]\n\n`));
+        controller.enqueue(encoder.encode(original));
         controller.close();
       },
     }),
@@ -141,8 +158,142 @@ test('Token 减速器为 0 时直接透传流式输出', async () => {
     cache({ matched: false, exact: false, weight: 0, observedTokens: 0 }),
     true, true, new AbortController().signal, null, 0,
   );
-  assert.match(writes.join(''), /\[DONE\]/);
+  assert.equal(writes.join(''), original);
+  assert.equal(writes.length, 2);
   assert.ok(Date.now() - started < 100);
+});
+
+test('平滑输出不等待上游结束，Unicode 字符、角色、结束标记和缓存 usage 不重复', async () => {
+  let controller;
+  const upstream = { body: new ReadableStream({ start(value) { controller = value; } }) };
+  const original = {
+    id: 'chat-1', model: 'test', object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta: { role: 'assistant', content: '你🙂好' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 100, completion_tokens: 7, total_tokens: 107 },
+  };
+  const writes = [];
+  let firstWrite;
+  const first = new Promise((resolve) => { firstWrite = resolve; });
+  const proxy = new ProxyHandler({}, null, null, null);
+  const streaming = proxy.pipeStream(upstream, {
+    write(chunk) { writes.push({ chunk, at: Date.now() }); firstWrite(); return true; },
+  }, cache({ matched: true, exact: true, weight: 1 }), true, true, new AbortController().signal, null, 20);
+  controller.enqueue(new TextEncoder().encode(sseEvent(original)));
+  await first;
+  assert.equal(writes.length, 1);
+  const head = sseObjects([writes[0].chunk])[0];
+  assert.equal(head.choices[0].delta.content, '你');
+  assert.equal(head.choices[0].finish_reason, null);
+  assert.equal(head.usage, null);
+  controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+  controller.close();
+  const result = await streaming;
+  const events = sseObjects(writes.map((item) => item.chunk));
+  assert.deepEqual(events.map((event) => event.choices[0].delta.content), ['你', '🙂', '好']);
+  assert.equal(events.filter((event) => event.choices[0].delta.role).length, 1);
+  assert.equal(events.filter((event) => event.choices[0].finish_reason).length, 1);
+  assert.equal(events.filter((event) => event.usage).length, 1);
+  assert.equal(events[2].usage.prompt_tokens_details.cached_tokens, 100);
+  assert.equal(events[2].usage.completion_tokens, 7);
+  assert.equal(result.usage.cachedTokens, 100);
+  assert.equal(result.complete, true);
+  assert.equal(writes.filter((item) => item.chunk.includes('[DONE]')).length, 1);
+  assert.ok(writes[1].at - writes[0].at >= 35);
+  assert.ok(writes[2].at - writes[1].at >= 35);
+});
+
+test('同一片段的思考和正文分开平滑输出，工具参数与复杂事件保持完整', async () => {
+  const tools = { choices: [{ index: 0, delta: {
+    content: '调用工具', tool_calls: [{ index: 0, id: 'call-1', function: { name: 'search', arguments: '{"q":"天气"}' } }],
+  }, finish_reason: 'tool_calls' }] };
+  const functionCall = { choices: [{ delta: { function_call: { name: 'search', arguments: '{}' } } }] };
+  const multiple = { choices: [{ index: 0, delta: { content: '第一条' } }, { index: 1, delta: { content: '第二条' } }] };
+  const logprobs = { choices: [{ delta: { content: '答案' }, logprobs: { content: [{ token: '答案', logprob: -1 }] } }] };
+  const writes = [];
+  await new ProxyHandler({}, null, null, null).pipeStream(streamOf([
+    sseEvent({ choices: [{ delta: { role: 'assistant', thinking: '思考', content: '回答' } }] }),
+    ...[tools, functionCall, multiple, logprobs].map(sseEvent), 'data: [DONE]\n\n',
+  ]), { write(chunk) { writes.push(chunk); return true; } }, cache(null), true, false, new AbortController().signal, null, 1000);
+  const events = sseObjects(writes);
+  assert.deepEqual(events.slice(0, 4).map((event) => event.choices[0].delta), [
+    { role: 'assistant', thinking: '思', reasoning_content: '思' },
+    { thinking: '考', reasoning_content: '考' }, { content: '回' }, { content: '答' },
+  ]);
+  assert.deepEqual(events.slice(4), [tools, functionCall, multiple, logprobs]);
+});
+
+test('Responses 文本平滑输出，序号递增且工具参数与最终 usage 原样保留', async () => {
+  const delta = { type: 'response.output_text.delta', item_id: 'msg-1', output_index: 0, content_index: 0, sequence_number: 1, delta: '你好' };
+  const reasoning = { type: 'response.reasoning_summary_text.delta', item_id: 'rs-1', output_index: 1, summary_index: 0, sequence_number: 2, delta: '想想' };
+  const tool = { type: 'response.function_call_arguments.delta', sequence_number: 3, item_id: 'fn-1', delta: '{"q":"天气"}' };
+  const usage = { input_tokens: 80, output_tokens: 12, total_tokens: 92, input_tokens_details: { cached_tokens: 64 } };
+  const writes = [];
+  const result = await new ProxyHandler({}, null, null, null).pipeStream(streamOf([
+    sseEvent({ type: 'response.created', sequence_number: 0 }),
+    `event: response.output_text.delta\r\n${sseEvent(delta).replaceAll('\n', '\r\n')}`,
+    sseEvent(reasoning), sseEvent(tool),
+    sseEvent({ type: 'response.output_text.done', sequence_number: 4, text: '你好' }),
+    sseEvent({ type: 'response.completed', sequence_number: 5, response: { status: 'completed', usage } }),
+  ]), { write(chunk) { writes.push(chunk); return true; } }, cache(null), true, false, new AbortController().signal, null, 1000);
+  const events = sseObjects(writes);
+  assert.deepEqual(events.map((event) => event.sequence_number), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(events.slice(1, 3).map((event) => event.delta), ['你', '好']);
+  assert.deepEqual(events.slice(3, 5).map((event) => event.delta), ['想', '想']);
+  assert.equal(writes.filter((chunk) => chunk.startsWith('event: response.output_text.delta\n')).length, 2);
+  assert.deepEqual(events[5], { ...tool, sequence_number: 5 });
+  assert.equal(events[6].text, '你好');
+  assert.deepEqual(events[7].response.usage, usage);
+  assert.equal(result.usage.cachedTokens, 64);
+  assert.equal(result.complete, true);
+});
+
+test('Completions 逐字输出且 include_usage 关闭时只隐藏最终统计事件', async () => {
+  const writes = [];
+  const result = await new ProxyHandler({}, null, null, null).pipeStream(streamOf([
+    sseEvent({ choices: [{ index: 0, text: '回答', finish_reason: 'stop' }] }),
+    sseEvent({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }),
+    'data: [DONE]\n\n',
+  ]), { write(chunk) { writes.push(chunk); return true; } }, cache(null), false, false, new AbortController().signal, null, 1000);
+  assert.deepEqual(sseObjects(writes), [
+    { choices: [{ index: 0, text: '回', finish_reason: null }] },
+    { choices: [{ index: 0, text: '答', finish_reason: 'stop' }] },
+  ]);
+  assert.equal(result.usage.completionTokens, 2);
+  assert.equal(result.complete, true);
+});
+
+test('平滑输出遵守下游背压，取消请求后不继续发送字符', async () => {
+  const controller = new AbortController();
+  const res = new EventEmitter();
+  const writes = [];
+  let firstWrite;
+  const first = new Promise((resolve) => { firstWrite = resolve; });
+  res.write = (chunk) => { writes.push(chunk); firstWrite(); return false; };
+  const streaming = new ProxyHandler({}, null, null, null).pipeStream(
+    streamOf([sseEvent({ choices: [{ delta: { content: '不能继续' } }] }), 'data: [DONE]\n\n']),
+    res, cache(null), true, false, controller.signal, null, 1000,
+  );
+  const rejected = assert.rejects(streaming, /测试取消/);
+  await first;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(writes.length, 1);
+  controller.abort(new Error('测试取消'));
+  await rejected;
+  assert.equal(writes.length, 1);
+  assert.equal(res.listenerCount('drain'), 0);
+  assert.equal(res.listenerCount('close'), 0);
+});
+
+test('平滑输出等待下个字符时也能立即取消', async () => {
+  const controller = new AbortController();
+  const writes = [];
+  const streaming = new ProxyHandler({}, null, null, null).pipeStream(
+    streamOf([sseEvent({ choices: [{ delta: { content: '不能继续' } }] })]),
+    { write(chunk) { writes.push(chunk); setTimeout(() => controller.abort(new Error('测试取消')), 10); return true; } },
+    cache(null), true, false, controller.signal, null, 1,
+  );
+  await assert.rejects(streaming, /测试取消/);
+  assert.equal(writes.length, 1);
 });
 
 test('零限速正文不等待缓存线程，最终 usage 仍注入命中 token', async () => {

@@ -43,8 +43,8 @@ const jsonError = (res, status, message, type = 'proxy_error') => {
 const bearer = (header = '') => header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || '';
 
 const wait = (ms, signal) => new Promise((resolve, reject) => {
-  if (ms <= 0) return resolve();
   if (signal?.aborted) return reject(signal.reason || new Error('请求已取消'));
+  if (ms <= 0) return resolve();
   const timer = setTimeout(done, ms);
   function done() { signal?.removeEventListener('abort', abort); resolve(); }
   function abort() { clearTimeout(timer); reject(signal.reason || new Error('请求已取消')); }
@@ -74,13 +74,16 @@ function outputCharacterCount(object) {
   for (const choice of object?.choices || []) {
     add(choice.text);
     add(choice.delta?.content);
+    add(choice.delta?.refusal);
     add(choice.delta?.reasoning_content ?? choice.delta?.reasoning ?? choice.delta?.thinking);
+    add(choice.delta?.function_call?.arguments);
     for (const call of choice.delta?.tool_calls || []) add(call.function?.arguments);
   }
   add(object?.delta);
   add(object?.output_text);
-  const text = parts.join('');
-  return [...text].length;
+  let count = 0;
+  for (const part of parts) for (const _ of part) count += 1;
+  return count;
 }
 
 class TokenPacer {
@@ -95,6 +98,70 @@ class TokenPacer {
     const delay = Math.max(0, this.nextAt - now);
     this.nextAt = Math.max(this.nextAt, now) + Math.max(0, characters) * 1000 / this.rate;
     await wait(delay, this.signal);
+  }
+}
+
+const reasoningFields = ['reasoning_content', 'reasoning', 'thinking'];
+const deltaTextFields = [...reasoningFields, 'content', 'refusal'];
+const responseTextEvents = new Set([
+  'response.output_text.delta', 'response.reasoning_text.delta',
+  'response.reasoning_summary_text.delta', 'response.refusal.delta',
+]);
+
+function* smoothTextChunks(object, characters) {
+  const sections = [];
+  const choice = object?.choices?.length === 1 ? object.choices[0] : null;
+  const delta = choice?.delta;
+  const responseText = responseTextEvents.has(object?.type) && typeof object.delta === 'string'
+    && (!object.logprobs || (Array.isArray(object.logprobs) && !object.logprobs.length));
+  // Tool arguments, multimodal data and token logprobs retain their original chunk boundaries.
+  const chatText = choice && !choice.logprobs && !choice.message
+    && Object.keys(choice).every((key) => ['index', 'delta', 'text', 'finish_reason', 'logprobs'].includes(key))
+    && (!delta || Object.keys(delta).every((key) => key === 'role'
+      || (deltaTextFields.includes(key) && (delta[key] == null || typeof delta[key] === 'string'))));
+  if (responseText) {
+    if (object.delta) sections.push({ text: object.delta });
+  } else if (chatText) {
+    const aliases = reasoningFields.filter((key) => typeof delta?.[key] === 'string' && delta[key]);
+    if (aliases.length && aliases.some((key) => delta[key] !== delta[aliases[0]])) {
+      yield { object, characters };
+      return;
+    }
+    if (aliases.length) sections.push({ text: delta[aliases[0]], keys: aliases });
+    for (const key of ['content', 'refusal']) {
+      if (delta?.[key]) sections.push({ text: delta[key], keys: [key] });
+    }
+    if (typeof choice.text === 'string' && choice.text) sections.push({ text: choice.text });
+  }
+  if (!sections.length) {
+    yield { object, characters };
+    return;
+  }
+  let first = true;
+  for (let i = 0; i < sections.length; i += 1) {
+    const section = sections[i];
+    let offset = 0;
+    // Iterating the string keeps surrogate pairs intact without allocating a character array.
+    for (const character of section.text) {
+      offset += character.length;
+      const last = i === sections.length - 1 && offset === section.text.length;
+      const chunk = { ...object };
+      if (!last && chunk.usage) chunk.usage = null;
+      if (responseText) chunk.delta = character;
+      else {
+        const part = { ...choice };
+        if (!last && part.finish_reason != null) part.finish_reason = null;
+        if (delta) {
+          part.delta = first ? { ...delta } : {};
+          for (const key of deltaTextFields) delete part.delta[key];
+          if (section.keys) for (const key of section.keys) part.delta[key] = character;
+        }
+        if (typeof choice.text === 'string') part.text = section.keys ? '' : character;
+        chunk.choices = [part];
+      }
+      yield { object: chunk, characters: 1 };
+      first = false;
+    }
   }
 }
 
@@ -201,11 +268,17 @@ async function patchSseEvent(event, resolveCache, forwardUsage, injectCache, cou
   const done = object?.type === 'response.completed' || object?.response?.status === 'completed';
   const outputCharacters = countOutput ? outputCharacterCount(object) : 0;
   if (usageOnly && !forwardUsage) return { event: '', usage, usageOnly: true, done, outputCharacters };
-  if (!reasoningNormalized && !(usage && injectCache)) return { event, usage, usageOnly, done, outputCharacters };
+  const result = { event, usage, usageOnly, done, outputCharacters };
+  if (!countOutput && !reasoningNormalized && !(usage && injectCache)) return result;
   const rebuilt = lines.filter((line) => !line.startsWith('data:'));
   const insertAt = rebuilt.findIndex((line) => line === '');
-  rebuilt.splice(insertAt < 0 ? rebuilt.length : insertAt, 0, `data: ${JSON.stringify(object)}`);
-  return { event: rebuilt.join('\n'), usage, usageOnly, done, outputCharacters };
+  const position = insertAt < 0 ? rebuilt.length : insertAt;
+  const before = rebuilt.slice(0, position).join('\n');
+  const after = rebuilt.slice(position).join('\n') || '\n';
+  const render = (value) => `${before ? `${before}\n` : ''}data: ${JSON.stringify(value)}\n${after}`;
+  if (reasoningNormalized || (usage && injectCache)) result.event = render(object);
+  if (countOutput) Object.assign(result, { object, render });
+  return result;
 }
 
 function copyRequestHeaders(req, secret) {
@@ -228,6 +301,7 @@ function copyResponseHeaders(upstream, res, hit, localCache) {
 }
 
 async function writeChunk(res, chunk, signal) {
+  if (signal?.aborted) throw signal.reason || new Error('请求已取消');
   if (res.write(chunk)) return;
   await new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -544,10 +618,19 @@ export class ProxyHandler {
     const decoder = new TextDecoder();
     const limited = Number(outputTps) > 0;
     const pacer = limited ? new TokenPacer(Number(outputTps), signal) : null;
+    let sequence = -1;
     const send = limited
       ? async (patched) => {
-          await pacer.pace(patched.outputCharacters);
-          if (patched.event) await writeChunk(res, patched.event, signal);
+          for (const frame of smoothTextChunks(patched.object, patched.outputCharacters)) {
+            await pacer.pace(frame.characters);
+            if (!patched.event) continue;
+            let object = frame.object;
+            if (Number.isInteger(object?.sequence_number)) {
+              sequence = Math.max(sequence + 1, object.sequence_number);
+              if (sequence !== object.sequence_number) object = { ...object, sequence_number: sequence };
+            }
+            await writeChunk(res, object === patched.object ? patched.event : patched.render(object), signal);
+          }
         }
       : async (patched) => {
           if (patched.event) await writeChunk(res, patched.event, signal);
