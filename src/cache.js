@@ -71,12 +71,13 @@ export function cachedTokenCount(hit, promptTokens, totalWeight) {
 }
 
 export class CacheLedger {
-  constructor(store, ttlMs) {
+  constructor(store) {
+    this.store = store;
     this.sequence = 0;
     this.pending = new Map();
     this.closing = false;
     this.worker = new Worker(new URL('./cache-worker.js', import.meta.url), {
-      workerData: { databasePath: store.databasePath, masterKey: store.masterKey, ttlMs },
+      workerData: { databasePath: store.databasePath, masterKey: store.masterKey, settings: store.cacheSettings },
     });
     this.worker.on('message', ({ id, result, error }) => {
       const request = this.pending.get(id);
@@ -127,6 +128,28 @@ export class CacheLedger {
 
   flush() {
     return this.request('flush');
+  }
+
+  async configure(settings) {
+    const invalid = (message) => Object.assign(new Error(message), { status: 400 });
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)
+      || Object.keys(settings).some((key) => !['enabled', 'ttlMs'].includes(key))) {
+      throw invalid('缓存设置格式不正确');
+    }
+    if (Object.hasOwn(settings, 'enabled') && typeof settings.enabled !== 'boolean') throw invalid('开启状态必须为布尔值');
+    if (Object.hasOwn(settings, 'ttlMs') && (!Number.isSafeInteger(settings.ttlMs) || settings.ttlMs < 60_000 || settings.ttlMs > 7 * 24 * 60 * 60_000)) {
+      throw invalid('缓存时间须在 1 分钟到 7 天之间');
+    }
+    this.store.cacheSettings = await this.request('configure', { settings });
+    return this.store.cacheSettings;
+  }
+
+  stats() {
+    return this.request('stats');
+  }
+
+  clear() {
+    return this.request('clear', {}, 120_000);
   }
 
   async close() {

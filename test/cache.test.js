@@ -90,7 +90,7 @@ test('连续哈希只把上一段摘要带入下一段', () => {
 test('第三方基础缓存支持完整命中、同模型前缀 token 和跨模型估算', async (t) => {
   const config = tempConfig();
   const store = new Store(config);
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   t.after(async () => { await ledger.close(); store.close(); config.cleanup(); });
 
   const endpoint = '/v1/chat/completions';
@@ -122,15 +122,57 @@ test('第三方基础缓存支持完整命中、同模型前缀 token 和跨模�
 
   await ledger.flush();
   const lifetime = store.db.prepare('SELECT expires_at - updated_at ttl FROM prompt_cache LIMIT 1').get();
-  assert.equal(Number(lifetime.ttl), 3_600_000);
+  assert.equal(Number(lifetime.ttl), 600_000);
   store.db.prepare('UPDATE prompt_cache SET expires_at=?').run(Date.now() - 1);
   assert.equal((await ledger.resolve(endpoint, request, 'model-a')).hit.matched, false);
+});
+
+test('缓存设置默认10分钟，修改后持久化且不改写已有有效期', async (t) => {
+  const config = tempConfig();
+  let store = new Store(config);
+  let ledger = new CacheLedger(store);
+  t.after(async () => { await ledger.close(); store.close(); config.cleanup(); });
+  assert.deepEqual(store.cacheSettings, { enabled: true, ttlMs: 600_000 });
+  const { fingerprint } = await ledger.resolve('/v1/chat/completions', { messages: [{ role: 'user', content: '旧记录' }] }, 'a');
+  ledger.register(fingerprint, 'a', 100);
+  await ledger.configure({ ttlMs: 120_000 });
+  await ledger.flush();
+  const old = store.db.prepare('SELECT expires_at, expires_at - updated_at ttl FROM prompt_cache').get();
+  assert.equal(old.ttl, 600_000);
+  ledger.register(fingerprint, 'a', 100);
+  await ledger.flush();
+  assert.equal(store.db.prepare('SELECT expires_at - updated_at ttl FROM prompt_cache').get().ttl, 120_000);
+  assert.ok((await ledger.stats()).entries > 0);
+
+  for (const input of [null, [], { unknown: 1 }, { enabled: 'false' }, { ttlMs: 0 }, { ttlMs: 60_000.5 }, { ttlMs: 604_800_001 }]) {
+    await assert.rejects(ledger.configure(input), (error) => error.status === 400);
+  }
+  await Promise.all([ledger.configure({ enabled: false }), ledger.configure({ ttlMs: 180_000 })]);
+  assert.deepEqual(store.cacheSettings, { enabled: false, ttlMs: 180_000 });
+  await ledger.close();
+  store.close();
+  store = new Store(config);
+  ledger = new CacheLedger(store);
+  assert.deepEqual(store.cacheSettings, { enabled: false, ttlMs: 180_000 });
+  assert.equal((await ledger.stats()).enabled, false);
+  await ledger.clear();
+  ledger.register(fingerprint, 'a', 100);
+  await ledger.flush();
+  assert.equal((await ledger.stats()).entries, 0);
+  await ledger.configure({ enabled: true });
+  ledger.register(fingerprint, 'a', 100);
+  await ledger.flush();
+  assert.equal(store.db.prepare('SELECT expires_at - updated_at ttl FROM prompt_cache').get().ttl, 180_000);
+  await ledger.clear();
+  assert.equal((await ledger.stats()).entries, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache_tokens').get().count, 0);
+  assert.deepEqual(store.cacheSettings, { enabled: true, ttlMs: 180_000 });
 });
 
 test('基础缓存仅存储哈希索引，不保存原文或内容分块', async (t) => {
   const config = tempConfig();
   const store = new Store(config);
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   t.after(async () => { await ledger.close(); store.close(); config.cleanup(); });
 
   const { fingerprint } = await ledger.resolve('/v1/chat/completions', {

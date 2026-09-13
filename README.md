@@ -1,8 +1,8 @@
 # Ollama Cloud Proxy
 
-面向 Ollama Cloud 和外部 OpenAI 兼容 API 的转发服务。支持多通道模型路由、公平轮询、流式工具调用透传、模型同步和 Token 统计。Ollama Cloud 直接透传官方缓存用量；第三方通道可逐个开启基础本地前缀缓存覆盖。
+面向 Ollama Cloud 和外部 OpenAI 兼容 API 的转发服务。支持多通道模型路由、公平轮询、流式工具调用透传、模型同步和 Token 统计。后台可切换基础本地前缀缓存与上游官方缓存，默认开启本地缓存，有效期 10 分钟。
 
-> 仅在第三方通道开启“代理缓存”时，本转发层才生成用于展示与下游计费的模拟 `cached_tokens`，这不会减少该第三方的上游实际用量。Ollama Cloud 不生成本地缓存数据。
+> 本地缓存生成用于展示与下游计费的模拟 `cached_tokens`，不会减少上游实际用量。关闭缓存总开关后，直接透传上游官方缓存用量；第三方通道使用本地缓存还需开启密钥页的“代理缓存”。
 
 ## 功能
 
@@ -12,7 +12,7 @@
 - 401/403 自动停用，429 按 `Retry-After` 冷却，临时错误自动换钥重试
 - 仅当 HTTP 400 响应包含 `Internal Server Error` 时额外重试两次，普通参数错误不会重试
 - 同时兼容 Ollama `/api/tags` 与 OpenAI `/v1/models`，后台按 API 地址分组，下游返回全部可用模型
-- 第三方代理缓存支持跨模型、跨上游密钥、跨下游密钥的一小时提示词前缀命中
+- 基础本地缓存支持跨模型、跨上游密钥、跨下游密钥的提示词前缀命中，默认 10 分钟，后台可修改有效期
 - 每个下游访问密钥可独立设置输出 Token 减速器，`0` 表示不限速
 - 每个下游访问密钥可独立启用来源白名单，默认不启用；支持 RP-Hub 源站和 Codex Router
 - 外部 API 可逐个选择直接透传上游缓存，或使用代理缓存替换上游 `cached_tokens`；错误仍不重试并原样透传
@@ -71,16 +71,16 @@ const response = await client.chat.completions.create({
 
 ## 缓存命中规则
 
-Ollama Cloud 完全跳过本地缓存计算、查询和写入，`usage` 中的官方缓存字段原样透传，官方未返回的缓存字段不会凭空补充。请求始终按额度均摊和模型权重路由，不再绑定会话。
+后台“缓存”页面提供本地缓存总开关。开启后 Ollama Cloud 使用基础前缀缓存；关闭后所有通道的新请求跳过本地缓存计算、查询和写入，`usage` 中的官方缓存字段原样透传，官方未返回的缓存字段不会凭空补充。请求始终按额度均摊和模型权重路由，不绑定会话。
 
-第三方 OpenAI 兼容通道默认也透传上游 usage，可在密钥页逐个开启“代理缓存”。开启后仅使用基础前缀命中，以代理计算的 `cached_tokens` 替换上游缓存统计；不再进行 RP 分块。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。以下规则仅适用于开启代理缓存的第三方通道：
+第三方 OpenAI 兼容通道默认透传上游 usage，可在密钥页逐个开启“代理缓存”，仅在总开关开启时生效。使用本地缓存时，以代理计算的 `cached_tokens` 替换上游缓存统计，保留其他 usage 字段；不进行 RP 分块。缓存键包含 `instructions`、system/messages/input、tools、`response_format` 和图片内容，不包含模型名及任何密钥。以下规则适用于启用本地缓存的请求：
 
 - 完整提示词相同：`cached_tokens` 等于本次真实 `prompt_tokens`。
 - 当前请求在旧请求后继续追加消息：最长相同前缀命中。
 - 同模型前缀优先使用历史 Token 观测值。
 - 跨模型前缀按本次真实输入 Token 和前缀长度估算。
 - 修改早期消息、工具定义、工具顺序、图片或输出 Schema 会从修改处开始失效。
-- 只有成功完成的请求会写入缓存；命中后成功完成会刷新一小时有效期。
+- 只有成功完成的请求会写入缓存；命中后成功完成会按设置的时长刷新有效期。
 
 响应同时带有：
 
@@ -90,9 +90,9 @@ X-Proxy-Cache-Type: exact | prefix
 X-Proxy-Cache-Source: proxy-simulated
 ```
 
-Ollama Cloud 和未开启代理缓存的第三方通道返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`。`BYPASS` 仅表示跳过本地缓存，不代表官方缓存未命中；具体命中量以响应中的 `usage` 为准。
+关闭总开关，或第三方通道未开启“代理缓存”时，返回 `X-Proxy-Cache: BYPASS` 和 `X-Proxy-Cache-Source: upstream`。`BYPASS` 仅表示跳过本地缓存，不代表官方缓存未命中；具体命中量以响应中的 `usage` 为准。
 
-第三方代理缓存在 Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`，在 Responses API 写入 `usage.input_tokens_details.cached_tokens`。流式 Chat Completions 会请求上游返回 usage 用于累计统计，但只有客户端设置 `stream_options.include_usage=true` 时才向下游发送最终 usage 数据块。
+本地缓存在 Chat Completions 写入 `usage.prompt_tokens_details.cached_tokens`，在 Responses API 写入 `usage.input_tokens_details.cached_tokens`。流式 Chat Completions 会请求上游返回 usage 用于累计统计，但只有客户端设置 `stream_options.include_usage=true` 时才向下游发送最终 usage 数据块。
 
 这两个字段是 New API 当前读取的标准缓存用量字段，因此把本服务配置为 New API 的 OpenAI 渠道时，命中量会进入 New API 的缓存 Token 计费流程。
 
@@ -106,7 +106,6 @@ Ollama Cloud 和未开启代理缓存的第三方通道返回 `X-Proxy-Cache: BY
 | `OLLAMA_API_KEYS` | 空 | 可选，逗号或换行分隔的上游密钥 |
 | `PROXY_API_KEYS` | 空 | 可选，逗号或换行分隔的下游密钥 |
 | `ALLOW_ANONYMOUS` | `false` | 是否允许无下游密钥调用 |
-| `CACHE_TTL` | `1h` | 第三方基础本地缓存有效期 |
 | `MODEL_SYNC_INTERVAL` | `10m` | 模型同步间隔 |
 | `QUOTA_SYNC_INTERVAL` | `2m` | Ollama 官方额度刷新间隔 |
 | `QUOTA_SYNC_URL` | `https://ollama.com/api/usage` | Ollama 官方额度接口 |
@@ -119,7 +118,9 @@ Ollama Cloud 和未开启代理缓存的第三方通道返回 `X-Proxy-Cache: BY
 
 Token 减速器设置在管理后台的“下游访问密钥”列表中，对 Ollama Cloud 和所有外部 API 通道统一生效。流式响应保持与上游同步，上游每返回一段就向下游发送一段，只在片段之间按字符数补充延时，因此是近似 token/s。设为 `0` 时跳过字数统计和限速计时，直接透传；非流式响应会按完成 token 数延迟整包返回。
 
-后台不再提供缓存页面、粘性路由或 RP 分块开关。升级会自动删除旧 RP 分块数据与相关设置，保留基础前缀账本及第三方密钥的代理缓存开关。基础缓存仍在独立工作线程中处理，默认一小时过期、最多占用 512 MB；既有前缀数据按原有效期自然淘汰。
+后台“缓存”页面支持开启/关闭本地缓存、设置有效期和清空缓存账本。默认开启、有效期 10 分钟，可设置 1 分钟到 7 天；设置保存在 SQLite 中，重启不丢失，保存后对新请求生效，进行中的请求保持原缓存处理方式。修改时长只影响新写入或再次命中的数据，既有前缀按原有效期自然淘汰。旧环境变量 `CACHE_TTL` 不再使用，以后台设置为准。
+
+基础缓存仍在独立工作线程中处理，空间上限 512 MB。不恢复粘性路由和 RP 分块；升级会删除旧 RP 分块数据与相关设置，保留基础前缀账本及第三方密钥的代理缓存开关。关闭总开关不会删除现有缓存，但其仍会正常过期。
 
 统计写入会在工作线程中批量处理，只保存下游密钥累计用量，不保存逐条请求或小时模型明细。升级后会汇总旧明细中的下游累计用量，再删除旧统计表。缓存命中计算使用独立缓存账本，不受此调整影响。额度页面根据最近多次成功刷新后的用量走势估算耗尽时间，刷新数据不足或额度没有增长时显示“暂无法估算”。
 
@@ -170,7 +171,6 @@ ghcr.io/<你的 GitHub 用户名>/ollama-cloud-proxy:latest
 - HTTP 端口 8080
 - `/data` 持久卷
 - `ADMIN_PASSWORD=123456`
-- `CACHE_TTL=1h`
 - `ALLOW_ANONYMOUS=false`
 
 Zeabur 挂载持久卷后，重新部署时会有短暂中断。如果需要多副本部署，应将 SQLite 缓存和统计迁移到共享数据库。
@@ -181,4 +181,4 @@ Zeabur 挂载持久卷后，重新部署时会有短暂中断。如果需要多�
 npm test
 ```
 
-测试覆盖基础缓存指纹、完整/前缀/跨模型命中、公平轮询、多 API 模型路由、外部模型同步、第三方缓存覆盖与错误透传、Ollama 官方 usage 透传和本地缓存旁路、Token 减速器，以及删除旧分块缓存后的数据库迁移。
+测试覆盖基础缓存指纹、完整/前缀/跨模型/跨密钥命中、缓存设置即时切换与重启保留、有效期变更、公平轮询、多 API 模型路由、外部模型同步、第三方缓存覆盖与错误透传、Ollama 本地缓存和官方 usage 透传、Token 减速器，以及删除旧分块缓存后的数据库迁移。

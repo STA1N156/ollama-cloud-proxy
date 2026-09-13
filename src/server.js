@@ -15,11 +15,11 @@ config.clientKeys.forEach((key, index) => store.addClientKey(`Env Client ${index
 
 const usage = new UsageLedger(store);
 const pool = new KeyPool(store, (event) => usage.reportHealth(event));
-const ledger = new CacheLedger(store, config.cacheTtlMs);
+const ledger = new CacheLedger(store);
 const modelSync = new ModelSync(config, store, pool);
 const quotaSync = new QuotaSync(config, store, pool);
 const proxy = new ProxyHandler(config, store, pool, ledger, usage);
-const admin = new AdminHandler(config, store, pool, usage, modelSync, quotaSync, proxy);
+const admin = new AdminHandler(config, store, pool, usage, modelSync, quotaSync, proxy, ledger);
 
 const server = http.createServer(async (req, res) => {
   try {

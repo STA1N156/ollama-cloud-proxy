@@ -88,7 +88,11 @@ export class Store {
       );
 
       DROP TABLE IF EXISTS prompt_cache_rp;
-      DROP TABLE IF EXISTS cache_settings;
+      CREATE TABLE IF NOT EXISTS cache_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      DELETE FROM cache_settings WHERE key IN ('rp_enabled', 'sticky_routing_enabled');
 
       CREATE TABLE IF NOT EXISTS error_settings (
         key TEXT PRIMARY KEY,
@@ -123,6 +127,8 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_cache_expiry ON prompt_cache(expires_at);
       CREATE INDEX IF NOT EXISTS idx_cache_updated ON prompt_cache(updated_at);
     `);
+    const cachePolicy = this.db.prepare("SELECT value FROM cache_settings WHERE key='policy'").get();
+    this.cacheSettings = cachePolicy ? JSON.parse(cachePolicy.value) : { enabled: true, ttlMs: 10 * 60_000 };
     const clientColumns = this.db.prepare('PRAGMA table_info(client_keys)').all();
     if (!clientColumns.some((column) => column.name === 'token_secret')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN token_secret TEXT NOT NULL DEFAULT ''");

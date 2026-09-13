@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cloud Proxy Console</title>
-  <link rel="stylesheet" href="/admin/style.css?v=18">
+  <link rel="stylesheet" href="/admin/style.css?v=19">
 </head>
 <body>
   <section class="login-shell" id="login-view">
@@ -26,6 +26,7 @@
         <button class="active" data-page="keys">密钥</button>
         <button data-page="models">模型</button>
         <button data-page="usage">用量</button>
+        <button data-page="cache">缓存</button>
         <button data-page="settings">设置</button>
       </nav>
       <div class="sidebar-foot"><span class="live-dot"></span> 服务运行中</div>
@@ -71,6 +72,22 @@
           <div class="quota-grid" id="quota-grid"></div>
         </section>
 
+        <section class="page hidden" id="page-cache">
+          <form class="panel cache-settings" id="cache-settings-form">
+            <div class="panel-head"><div><h3>基础前缀缓存</h3><p>相同内容与连续对话前缀命中，不使用 RP 分块</p></div><span class="badge" id="cache-status">读取中</span></div>
+            <div class="cache-fields">
+              <label class="cache-option"><span><strong>使用本地缓存</strong><small>开启：用本地命中覆盖缓存 token。关闭：直接透传上游官方 usage。</small></span><input id="cache-enabled" type="checkbox" role="switch" aria-label="使用本地缓存"></label>
+              <label class="cache-option"><span><strong>缓存有效期</strong><small>默认 10 分钟，可设置 1 分钟到 7 天。</small></span><span class="cache-duration"><input id="cache-ttl" type="number" min="1" max="10080" step="1" value="10" required aria-label="缓存有效期（分钟）"><span>分钟</span></span></label>
+              <p class="cache-help">总开关开启后，Ollama 使用本地缓存；第三方仍按密钥页的“代理缓存”开关决定是否覆盖。修改时长只影响新写入或再次命中的缓存，已有数据按原时间过期。</p>
+            </div>
+            <div class="settings-actions"><span>保存后新请求立即生效，进行中的请求保持原方式</span><button class="primary" type="submit">保存设置</button></div>
+          </form>
+          <div class="panel cache-storage">
+            <div class="panel-head"><div><h3>缓存账本</h3><p>只保存内容摘要，不保存对话原文；模拟命中不会减少上游实际用量。</p></div><button class="danger" id="clear-cache">清空缓存</button></div>
+            <div class="cache-metrics"><div><span>有效前缀</span><strong id="cache-entries">—</strong></div><div><span>索引占用</span><strong id="cache-size">—</strong></div><div><span>空间上限</span><strong>512 MB</strong></div></div>
+          </div>
+        </section>
+
         <section class="page hidden" id="page-settings">
           <form class="panel error-settings" id="error-settings-form">
             <div class="panel-head"><div><h3>错误提示</h3><p>修改代理主动返回给下游用户的固定文案，上游原始错误仍会直接透传</p></div><button class="danger" type="button" id="reset-error-messages">恢复默认</button></div>
@@ -84,6 +101,6 @@
 
   <dialog id="token-dialog"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3>请立即保存</h3><p class="muted">关闭后无法再次查看完整密钥。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">我已保存</button></div></dialog>
   <div class="toast" id="toast"></div>
-  <script type="module" src="/admin/app.js?v=25"></script>
+  <script type="module" src="/admin/app.js?v=26"></script>
 </body>
 </html>

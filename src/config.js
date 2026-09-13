@@ -40,7 +40,6 @@ export const config = {
   modelSyncIntervalMs: duration('MODEL_SYNC_INTERVAL', 10 * 60_000),
   quotaSyncUrl,
   quotaSyncIntervalMs: duration('QUOTA_SYNC_INTERVAL', 2 * 60_000),
-  cacheTtlMs: duration('CACHE_TTL', 60 * 60_000),
   maxRequestBytes: integer('MAX_REQUEST_BYTES', 32 * 1024 * 1024),
   responseHeaderTimeoutMs: duration('RESPONSE_HEADER_TIMEOUT', 600_000),
   retryCount: Math.min(10, integer('UPSTREAM_RETRIES', 10)),

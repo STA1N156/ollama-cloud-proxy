@@ -33,7 +33,7 @@ async function json(req) {
 const cookies = (header = '') => Object.fromEntries(header.split(';').map((item) => item.trim().split('=').map(decodeURIComponent)).filter((item) => item.length === 2));
 
 export class AdminHandler {
-  constructor(config, store, pool, usage, modelSync, quotaSync, proxy) {
+  constructor(config, store, pool, usage, modelSync, quotaSync, proxy, ledger) {
     this.config = config;
     this.store = store;
     this.pool = pool;
@@ -41,6 +41,7 @@ export class AdminHandler {
     this.modelSync = modelSync;
     this.quotaSync = quotaSync;
     this.proxy = proxy;
+    this.ledger = ledger;
     this.loginAttempts = new Map();
   }
 
@@ -178,6 +179,14 @@ export class AdminHandler {
       return send(res, 200, {
         upstreamKeys: this.pool.snapshot().filter((key) => key.base_url === this.store.defaultUpstreamBaseUrl),
       });
+    }
+    if (url.pathname === '/admin/api/cache') {
+      if (req.method === 'GET') return send(res, 200, { cache: await this.ledger.stats() });
+      if (req.method === 'PATCH') return send(res, 200, { cache: await this.ledger.configure(await json(req)) });
+      if (req.method === 'DELETE') {
+        await this.ledger.clear();
+        return send(res, 200, { ok: true });
+      }
     }
     if (url.pathname === '/admin/api/upstream-keys' && req.method === 'POST') {
       const body = await json(req);

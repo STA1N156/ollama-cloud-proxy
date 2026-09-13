@@ -14,7 +14,6 @@ export function tempConfig(overrides = {}) {
     modelSyncIntervalMs: 600_000,
     quotaSyncUrl: 'http://127.0.0.1/api/usage',
     quotaSyncIntervalMs: 120_000,
-    cacheTtlMs: 3_600_000,
     maxRequestBytes: 1024 * 1024,
     responseHeaderTimeoutMs: 5000,
     retryCount: 10,

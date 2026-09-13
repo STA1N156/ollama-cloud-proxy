@@ -206,7 +206,7 @@ test('白名单并发模式超额时立即返回指定503，完成后释放名�
   const clientId = store.addClientKey('limited', 'limited-key', 0, 'limit:5');
   const usage = new UsageLedger(store);
   const pool = new KeyPool(store, (event) => usage.reportHealth(event));
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
   const proxyUrl = await listen(proxyServer);
@@ -292,8 +292,9 @@ test('Ollama 401 自动换钥，非流式和流式官方 usage 透传且不访�
   store.addClientKey('router', 'router-key', 0, 'codex-router');
   const usage = new UsageLedger(store);
   const pool = new KeyPool(store, (event) => usage.reportHealth(event));
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   const cacheCalls = [];
+  await ledger.configure({ enabled: false });
   const forbiddenCache = {
     resolve() { cacheCalls.push('resolve'); throw new Error('Ollama 不应计算本地缓存'); },
     register() { cacheCalls.push('register'); },
@@ -416,6 +417,63 @@ test('Ollama 401 自动换钥，非流式和流式官方 usage 透传且不访�
   assert.equal(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache').get().count, 0);
 });
 
+test('Ollama 基础缓存跨模型密钥命中，关闭后 JSON 和流式均恢复官方 usage', async (t) => {
+  const received = [];
+  const upstreamServer = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    received.push(req.headers.authorization);
+    const usage = { prompt_tokens: 100, completion_tokens: 2, total_tokens: 102, prompt_tokens_details: { cached_tokens: 7 } };
+    res.setHeader('content-type', body.stream ? 'text/event-stream' : 'application/json');
+    if (body.stream) return res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'OK', reasoning: '思考' } }] })}\n\ndata: ${JSON.stringify({ choices: [], usage })}\n\ndata: [DONE]\n\n`);
+    res.end(JSON.stringify({ choices: [{ message: { content: 'OK' } }], usage }));
+  });
+  const upstreamUrl = await listen(upstreamServer);
+  const config = tempConfig({ upstreamBaseUrl: `${upstreamUrl}/v1` });
+  const store = new Store(config);
+  store.addUpstreamKey('A', 'key-a');
+  store.addUpstreamKey('B', 'key-b');
+  store.addClientKey('client', 'client-key');
+  const usage = new UsageLedger(store);
+  const pool = new KeyPool(store);
+  const ledger = new CacheLedger(store);
+  const proxy = new ProxyHandler(config, store, pool, ledger, usage);
+  const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
+  const proxyUrl = await listen(proxyServer);
+  t.after(async () => {
+    await Promise.all([new Promise((resolve) => proxyServer.close(resolve)), new Promise((resolve) => upstreamServer.close(resolve))]);
+    await Promise.all([ledger.close(), usage.close()]); store.close(); config.cleanup();
+  });
+  const call = (stream = false, model = 'a') => fetch(`${proxyUrl}/v1/chat/completions`, {
+    method: 'POST', headers: { authorization: 'Bearer client-key', 'content-type': 'application/json' },
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: '相同的内容' }], stream, stream_options: { include_usage: true } }),
+  });
+  const first = await call();
+  assert.equal((await first.json()).usage.prompt_tokens_details.cached_tokens, 0);
+  await ledger.flush();
+  const second = await call(true);
+  const streamed = await second.text();
+  assert.match(streamed, /"cached_tokens":100/);
+  assert.match(streamed, /"reasoning_content":"思考"/);
+  assert.deepEqual(received.slice(0, 2), ['Bearer key-a', 'Bearer key-b']);
+  const crossModel = await call(false, 'b');
+  assert.equal((await crossModel.json()).usage.prompt_tokens_details.cached_tokens, 100);
+  await ledger.flush();
+  const cachedRows = store.db.prepare('SELECT * FROM prompt_cache ORDER BY hash').all();
+  await ledger.configure({ enabled: false });
+  const official = await call();
+  assert.equal(official.headers.get('x-proxy-cache-source'), 'upstream');
+  assert.equal((await official.json()).usage.prompt_tokens_details.cached_tokens, 7);
+  const officialStream = await call(true);
+  assert.equal(officialStream.headers.get('x-proxy-cache'), 'BYPASS');
+  assert.match(await officialStream.text(), /"cached_tokens":7/);
+  await ledger.flush();
+  assert.deepEqual(store.db.prepare('SELECT * FROM prompt_cache ORDER BY hash').all(), cachedRows);
+  await ledger.configure({ enabled: true });
+  assert.equal((await (await call()).json()).usage.prompt_tokens_details.cached_tokens, 100);
+});
+
 test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并支持减速', async (t) => {
   const ollamaServer = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
@@ -459,7 +517,7 @@ test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并�
   assert.deepEqual(store.listModels().map((item) => [item.source_label, item.name]).sort(), [
     ['External', 'external-model'], ['Ollama', 'ollama-model'],
   ]);
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
   const proxyUrl = await listen(proxyServer);
@@ -505,6 +563,13 @@ test('外部 OpenAI API 可选择透传或使用代理缓存，错误透明并�
   assert.match(hit, /"cached_tokens":10/);
   assert.doesNotMatch(hit, /"cached_tokens":3/);
   assert.equal(hitResponse.headers.get('x-proxy-cache-source'), 'proxy-simulated');
+  await ledger.configure({ enabled: false });
+  const bypass = await request('proxy-cache');
+  assert.equal(bypass.headers.get('x-proxy-cache-source'), 'upstream');
+  assert.match(await bypass.text(), /"cached_tokens":3/);
+  assert.equal(store.getUpstreamKey(externalKeyId).use_proxy_cache, true);
+  await ledger.configure({ enabled: true });
+  assert.match(await (await request('proxy-cache')).text(), /"cached_tokens":10/);
 });
 
 test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
@@ -522,7 +587,7 @@ test('Ollama 429 最多轮换10个不同密钥并进入冷却', async (t) => {
   store.addClientKey('client', 'client-key');
   const usage = new UsageLedger(store);
   const pool = new KeyPool(store, (event) => usage.reportHealth(event));
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
   const proxyUrl = await listen(proxyServer);
@@ -575,7 +640,7 @@ test('只对 Internal Server Error 的 HTTP 400 重试两次', async (t) => {
   store.addClientKey('client', 'client-key');
   const usage = new UsageLedger(store);
   const pool = new KeyPool(store, (event) => usage.reportHealth(event));
-  const ledger = new CacheLedger(store, config.cacheTtlMs);
+  const ledger = new CacheLedger(store);
   const proxy = new ProxyHandler(config, store, pool, ledger, usage);
   const proxyServer = http.createServer((req, res) => proxy.handle(req, res));
   const proxyUrl = await listen(proxyServer);

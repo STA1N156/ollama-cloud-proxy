@@ -112,7 +112,7 @@ export class KeyPool {
       label: selected.label,
       baseUrl: selected.base_url,
       secret: selected.secret,
-      useProxyCache: selected.base_url !== this.store.defaultUpstreamBaseUrl && selected.use_proxy_cache,
+      useProxyCache: this.usesProxyCache(selected),
       release: () => {
         if (released) return;
         released = true;
@@ -125,6 +125,10 @@ export class KeyPool {
   concurrencyLimit(key) {
     if (key.base_url !== this.store.defaultUpstreamBaseUrl) return Infinity;
     return key.tier === 'pro' ? 3 : 10;
+  }
+
+  usesProxyCache(key) {
+    return this.store.cacheSettings.enabled && (key.base_url === this.store.defaultUpstreamBaseUrl || key.use_proxy_cache);
   }
 
   quotaBalanced(keys) {
@@ -231,7 +235,7 @@ export class KeyPool {
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,
       concurrencyLimit: key.base_url === this.store.defaultUpstreamBaseUrl ? (key.tier === 'pro' ? 3 : 10) : null,
-      proxyCacheEnabled: key.base_url !== this.store.defaultUpstreamBaseUrl && key.use_proxy_cache,
+      proxyCacheEnabled: this.usesProxyCache(key),
       proxyCacheConfigurable: key.base_url !== this.store.defaultUpstreamBaseUrl,
     }));
   }

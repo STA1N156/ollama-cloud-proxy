@@ -37,19 +37,27 @@ test('同一模型在健康密钥间公平轮询', async (t) => {
   assert.deepEqual(ids, [1, 2, 1, 2]);
 });
 
-test('仅第三方密钥可启用本地缓存覆盖，旧 Ollama 配置不再生效', (t) => {
+test('本地缓存总开关实时控制 Ollama 和第三方，不改变第三方独立开关', (t) => {
   const config = tempConfig();
   const store = new Store(config);
   const ollamaId = store.addUpstreamKey('Ollama', 'key-a', config.upstreamBaseUrl, true);
   const externalId = store.addUpstreamKey('External', 'key-b', 'https://external.example/v1', true);
   const pool = new KeyPool(store);
   t.after(() => { store.close(); config.cleanup(); });
-  assert.deepEqual(pool.snapshot().map((key) => [key.proxyCacheConfigurable, key.proxyCacheEnabled]), [[false, false], [true, true]]);
-  for (const [id, enabled] of [[ollamaId, false], [externalId, true]]) {
+  assert.deepEqual(pool.snapshot().map((key) => [key.proxyCacheConfigurable, key.proxyCacheEnabled]), [[false, true], [true, true]]);
+  for (const [id, enabled] of [[ollamaId, true], [externalId, true]]) {
     const lease = pool.lease(pool.keys.get(id));
     assert.equal(lease.useProxyCache, enabled);
     lease.release();
   }
+  store.cacheSettings.enabled = false;
+  for (const id of [ollamaId, externalId]) {
+    const lease = pool.lease(pool.keys.get(id));
+    assert.equal(lease.useProxyCache, false);
+    lease.release();
+  }
+  assert.ok(pool.snapshot().every((key) => !key.proxyCacheEnabled));
+  assert.equal(store.getUpstreamKey(externalId).use_proxy_cache, true);
 });
 
 test('MAX 与 PRO 按5比1分配且每个模型独立计算', async (t) => {

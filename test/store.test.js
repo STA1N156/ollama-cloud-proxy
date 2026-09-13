@@ -27,7 +27,7 @@ test('升级清理旧分块缓存和路由设置，保留第三方基础缓存�
   t.after(() => { store.close(); config.cleanup(); });
   const keyId = store.addUpstreamKey('External', 'external-key', 'https://example.com/v1', true);
   store.db.exec(`
-    CREATE TABLE cache_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS cache_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO cache_settings VALUES ('rp_enabled', '1'), ('sticky_routing_enabled', '1');
     CREATE TABLE prompt_cache_rp (hash TEXT PRIMARY KEY, expires_at INTEGER);
     CREATE INDEX idx_cache_rp_expiry ON prompt_cache_rp(expires_at);
@@ -37,7 +37,9 @@ test('升级清理旧分块缓存和路由设置，保留第三方基础缓存�
   `);
   store.close();
   store = new Store(config);
-  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE name IN ('cache_settings', 'prompt_cache_rp', 'idx_cache_rp_expiry')").get().count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE name IN ('prompt_cache_rp', 'idx_cache_rp_expiry')").get().count, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM cache_settings').get().count, 0);
+  assert.deepEqual(store.cacheSettings, { enabled: true, ttlMs: 600_000 });
   assert.equal(store.db.prepare('SELECT COUNT(*) count FROM prompt_cache').get().count, 1);
   assert.equal(store.db.prepare('SELECT tokens FROM prompt_cache_tokens').get().tokens, 80);
   assert.equal(store.getUpstreamKey(keyId).use_proxy_cache, true);

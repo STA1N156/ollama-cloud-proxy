@@ -4,12 +4,13 @@ import { buildFingerprint } from './cache.js';
 
 const CACHE_LIMIT_BYTES = 512 * 1024 * 1024;
 const db = new DatabaseSync(workerData.databasePath);
-const ttlMs = Number(workerData.ttlMs);
+let settings = workerData.settings;
 const masterKey = Buffer.from(workerData.masterKey);
 const queue = [];
 const pending = new Map();
 let version = 0;
 let lastMaintenance = 0;
+let statsCache = null;
 
 db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
 
@@ -67,12 +68,12 @@ function lookup(fingerprint, model) {
 }
 
 function register(fingerprint, model, promptTokens = 0) {
-  if (!fingerprint.entries.length) return;
+  if (!settings.enabled || !fingerprint.entries.length) return;
   const itemVersion = ++version;
   const modelName = model || '';
   const tokens = Number(promptTokens) || 0;
   const stamp = Date.now();
-  const expiresAt = stamp + ttlMs;
+  const expiresAt = stamp + settings.ttlMs;
   for (const entry of fingerprint.entries) {
     const key = cacheKey(fingerprint.endpoint, entry.hash);
     pending.set(key, {
@@ -85,7 +86,7 @@ function register(fingerprint, model, promptTokens = 0) {
   if (tokens > 0 && fingerprint.entries.length) {
     pending.get(cacheKey(fingerprint.endpoint, fingerprint.entries.at(-1).hash)).tokens.set(modelName, tokens);
   }
-  queue.push({ fingerprint, model: modelName, promptTokens: tokens, version: itemVersion });
+  queue.push({ fingerprint, model: modelName, promptTokens: tokens, version: itemVersion, stamp, expiresAt });
   if (queue.length >= 128) flush();
 }
 
@@ -117,16 +118,24 @@ function maintain() {
   lastMaintenance = stamp;
 }
 
+function stats() {
+  const stamp = Date.now();
+  if (!statsCache || stamp - statsCache.updatedAt >= 5_000) {
+    const { entries } = db.prepare('SELECT COUNT(*) entries FROM prompt_cache WHERE expires_at>?').get(stamp);
+    statsCache = { entries: Number(entries), indexedBytes: cacheBytes(), limitBytes: CACHE_LIMIT_BYTES, updatedAt: stamp };
+  }
+  return { ...statsCache, ...settings };
+}
+
 function flush() {
   if (!queue.length) return;
   const batch = queue.splice(0, 256);
   const stamp = Date.now();
-  const expires = stamp + ttlMs;
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const item of batch) {
       for (const entry of item.fingerprint.entries) {
-        cacheStatement.run(entry.hash, item.fingerprint.endpoint, entry.weight, expires, stamp);
+        cacheStatement.run(entry.hash, item.fingerprint.endpoint, entry.weight, item.expiresAt, item.stamp);
       }
       if (item.promptTokens > 0 && item.fingerprint.entries.length) {
         tokenStatement.run(item.fingerprint.entries.at(-1).hash, item.model, item.promptTokens);
@@ -163,7 +172,20 @@ parentPort.on('message', (message) => {
       respond({ fingerprint, hit: lookup(fingerprint, message.model) });
     } else if (message.type === 'register') register(message.fingerprint, message.model, message.promptTokens);
     else if (message.type === 'flush') { while (queue.length) flush(); respond(true); }
-    else if (message.type === 'close') {
+    else if (message.type === 'stats') { while (queue.length) flush(); respond(stats()); }
+    else if (message.type === 'configure') {
+      const next = { ...settings, ...message.settings };
+      db.prepare("INSERT INTO cache_settings(key, value) VALUES ('policy', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .run(JSON.stringify(next));
+      settings = next;
+      respond(settings);
+    } else if (message.type === 'clear') {
+      db.exec('DELETE FROM prompt_cache');
+      queue.length = 0;
+      pending.clear();
+      statsCache = null;
+      respond(true);
+    } else if (message.type === 'close') {
       clearInterval(timer);
       while (queue.length) flush();
       db.close();
