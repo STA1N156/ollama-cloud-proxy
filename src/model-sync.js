@@ -51,7 +51,7 @@ export class ModelSync {
     const sources = [...new Set(this.pool.snapshot().filter((key) => key.enabled).map((key) => key.base_url))];
     if (!sources.length) throw new Error('还没有可用的上游 API');
     const results = await Promise.allSettled(sources.map((source) => this.#syncSource(source)));
-    this.pool.reload();
+    this.pool.reloadModels();
     const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason?.message || '未知错误');
     this.lastError = failures.join('；');
     const count = results.reduce((sum, result) => sum + (result.status === 'fulfilled' ? result.value : 0), 0);
@@ -74,8 +74,7 @@ export class ModelSync {
         });
         if (!response.ok) {
           await response.body?.cancel();
-          const invalid = response.status === 401 || response.status === 403;
-          this.pool.report(lease.id, invalid ? 'invalid' : 'degraded', `HTTP ${response.status}`, invalid ? 0 : 3000);
+          this.pool.reportFailure(lease.id, response);
           throw new Error(`${lease.label} 模型同步失败：HTTP ${response.status}`);
         }
         const models = normalizeModels(await response.json());

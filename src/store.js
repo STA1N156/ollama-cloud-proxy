@@ -158,6 +158,15 @@ export class Store {
       this.db.exec('ALTER TABLE upstream_keys ADD COLUMN session_quota_blocked INTEGER NOT NULL DEFAULT 0');
     }
     this.db.exec("UPDATE upstream_keys SET tier='max' WHERE tier NOT IN ('max', 'pro') OR tier IS NULL");
+    this.db.exec(`
+      UPDATE upstream_keys SET status='new', last_error='', cooldown_until=0
+      WHERE status IN ('degraded', 'invalid', 'cooldown')
+        AND last_error NOT GLOB 'HTTP 403*' AND last_error NOT GLOB 'HTTP 429*';
+      UPDATE upstream_keys SET status='invalid', cooldown_until=0
+      WHERE status='degraded' AND last_error GLOB 'HTTP 403*';
+      UPDATE upstream_keys SET status='cooldown'
+      WHERE status='degraded' AND last_error GLOB 'HTTP 429*';
+    `);
     this.db.prepare("UPDATE upstream_keys SET base_url=? WHERE base_url='' OR base_url IS NULL").run(this.defaultUpstreamBaseUrl);
     const upstreamUnique = this.db.prepare("PRAGMA index_list('upstream_keys')").all().filter((index) => index.unique);
     const hasGlobalSecretUnique = upstreamUnique.some((index) => {

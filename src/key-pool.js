@@ -2,6 +2,15 @@ const FIVE_HOURS_MS = 5 * 60 * 60_000;
 const WEEK_MS = 7 * 24 * 60 * 60_000;
 const MONTH_MS = 31 * 24 * 60 * 60_000;
 
+const retryAfterMs = (response) => {
+  const raw = response.headers.get('retry-after');
+  if (!raw) return 30_000;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(1000, seconds * 1000);
+  const date = Date.parse(raw);
+  return Number.isFinite(date) ? Math.max(1000, date - Date.now()) : 30_000;
+};
+
 export function estimateQuotaExhaustion(history, maxMs = WEEK_MS) {
   let points = history.filter((point) => Number.isFinite(point.at) && Number.isFinite(point.usage));
   let resetAt = 0;
@@ -50,12 +59,6 @@ export class KeyPool {
 
   reload() {
     const fresh = this.store.listUpstreamKeys({ reveal: true });
-    this.modelsBySource = new Map();
-    for (const row of this.store.listModelRoutes()) {
-      if (!this.modelsBySource.has(row.source_url)) this.modelsBySource.set(row.source_url, new Set());
-      this.modelsBySource.get(row.source_url).add(row.name);
-    }
-    this.hasModels = this.modelsBySource.size > 0;
     const seen = new Set();
     for (const row of fresh) {
       seen.add(row.id);
@@ -65,6 +68,16 @@ export class KeyPool {
     }
     for (const id of this.keys.keys()) if (!seen.has(id)) this.keys.delete(id);
     this.sortedKeys = [...this.keys.values()].sort((a, b) => a.id - b.id);
+    this.reloadModels();
+  }
+
+  reloadModels() {
+    this.modelsBySource = new Map();
+    for (const row of this.store.listModelRoutes()) {
+      if (!this.modelsBySource.has(row.source_url)) this.modelsBySource.set(row.source_url, new Set());
+      this.modelsBySource.get(row.source_url).add(row.name);
+    }
+    this.hasModels = this.modelsBySource.size > 0;
     this.schedules.clear();
     this.wake();
   }
@@ -177,6 +190,12 @@ export class KeyPool {
         return;
       }
     }
+  }
+
+  reportFailure(id, response, detail = '') {
+    if (response.status !== 403 && response.status !== 429) return;
+    this.report(id, response.status === 403 ? 'invalid' : 'cooldown',
+      `HTTP ${response.status}${detail ? `: ${detail}` : ''}`, response.status === 429 ? retryAfterMs(response) : 0);
   }
 
   report(id, status, error = '', cooldownMs = 0) {

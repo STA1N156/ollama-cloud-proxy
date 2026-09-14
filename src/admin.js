@@ -104,7 +104,7 @@ export class AdminHandler {
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 300);
-      this.pool.report(id, response.status === 401 || response.status === 403 ? 'invalid' : 'degraded', `HTTP ${response.status}: ${detail}`);
+      this.pool.reportFailure(id, response, detail);
       throw Object.assign(new Error(`测试失败：HTTP ${response.status}${detail ? `，${detail}` : ''}`), { status: 400 });
     }
     if (ollama) {
@@ -131,7 +131,7 @@ export class AdminHandler {
       });
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 300);
-        this.pool.report(lease.id, response.status === 401 || response.status === 403 ? 'invalid' : 'degraded', `HTTP ${response.status}: ${detail}`);
+        this.pool.reportFailure(lease.id, response, detail);
         throw Object.assign(new Error(`测试失败：HTTP ${response.status}${detail ? `，${detail}` : ''}`), { status: 400 });
       }
       const result = await response.json();
@@ -139,7 +139,6 @@ export class AdminHandler {
       this.pool.report(lease.id, 'healthy');
       return { ok: true };
     } catch (error) {
-      if (lease && !error.status) this.pool.report(lease.id, 'degraded', error.message, 3000);
       if (error.status) throw error;
       throw Object.assign(new Error(`测试失败：${error.message}`), { status: 400 });
     } finally {

@@ -8,7 +8,6 @@
   },
   "scripts": {
     "start": "node --no-warnings src/server.js",
-    "test": "node --no-warnings --test",
     "check": "node --check src/server.js"
   }
 }

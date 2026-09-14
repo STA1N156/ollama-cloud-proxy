@@ -318,15 +318,6 @@ async function writeChunk(res, chunk, signal) {
   });
 }
 
-const retryAfterMs = (response) => {
-  const raw = response.headers.get('retry-after');
-  if (!raw) return 30_000;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds)) return Math.max(1000, seconds * 1000);
-  const date = Date.parse(raw);
-  return Number.isFinite(date) ? Math.max(1000, date - Date.now()) : 30_000;
-};
-
 export class ProxyHandler {
   constructor(config, store, pool, ledger, usage) {
     this.config = config;
@@ -457,7 +448,6 @@ export class ProxyHandler {
     let upstream;
     let lastError;
     let bufferedUpstreamBody;
-    let finalInternal400 = false;
     let internal400Retries = 0;
     let ordinaryFailures = 0;
     let cacheJob;
@@ -496,8 +486,8 @@ export class ProxyHandler {
         if (supportsLocalCache && lease.useProxyCache) startCache();
         upstream = await fetchJob;
         bufferedUpstreamBody = undefined;
-        finalInternal400 = false;
         if (lease.baseUrl !== this.store.defaultUpstreamBaseUrl) {
+          this.pool.reportFailure(lease.id, upstream);
           lastError = null;
           break;
         }
@@ -506,7 +496,6 @@ export class ProxyHandler {
           const shouldRetry = internalServerError400(upstream.status, bufferedUpstreamBody);
           if (shouldRetry && internal400Retries < 2) {
             internal400Retries += 1;
-            this.pool.report(lease.id, 'degraded', `HTTP 400: ${bufferedUpstreamBody.slice(0, 500)}`);
             lastError = new Error('Ollama Cloud 返回 HTTP 400 Internal Server Error');
             lease.release();
             lease = null;
@@ -514,7 +503,6 @@ export class ProxyHandler {
             bufferedUpstreamBody = undefined;
             continue;
           }
-          finalInternal400 = shouldRetry;
           lastError = shouldRetry ? new Error('Ollama Cloud 连续三次返回 HTTP 400 Internal Server Error') : null;
           break;
         }
@@ -523,9 +511,7 @@ export class ProxyHandler {
           break;
         }
         const errorText = (await upstream.text()).slice(0, 500);
-        const invalid = upstream.status === 401 || upstream.status === 403;
-        const cooldown = upstream.status === 429 ? retryAfterMs(upstream) : 3000;
-        this.pool.report(lease.id, invalid ? 'invalid' : upstream.status === 429 ? 'cooldown' : 'degraded', `HTTP ${upstream.status}: ${errorText}`, invalid ? 0 : cooldown);
+        this.pool.reportFailure(lease.id, upstream, errorText);
         lastError = new Error(this.store.errorMessage('api_unavailable'));
         lease.release();
         lease = null;
@@ -535,7 +521,6 @@ export class ProxyHandler {
         lastError = error;
         const external = lease?.baseUrl !== this.store.defaultUpstreamBaseUrl;
         if (lease) {
-          if (!external) this.pool.report(lease.id, 'degraded', error.message, 3000);
           lease.release();
           lease = null;
         }
@@ -553,11 +538,7 @@ export class ProxyHandler {
     raw = null;
     upstreamBody = null;
     request = null;
-    const external = lease.baseUrl !== this.store.defaultUpstreamBaseUrl;
-    if (external && upstream.ok) this.pool.report(lease.id, 'healthy');
-    else if (!external && finalInternal400) this.pool.report(lease.id, 'degraded', lastError.message, 3000);
-    else if (!external && (upstream.status === 401 || upstream.status === 403)) this.pool.report(lease.id, 'invalid', `HTTP ${upstream.status}`);
-    else if (!external && upstream.status < 500) this.pool.report(lease.id, 'healthy');
+    if (upstream.ok) this.pool.report(lease.id, 'healthy');
     if (upstream.ok) lastError = null;
 
     let usage = null;

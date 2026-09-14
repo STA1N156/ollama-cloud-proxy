@@ -40,7 +40,7 @@ function showApp() {
 function badge(status) {
   const map = {
     healthy: ['健康', 'good'], new: ['待检测', ''], paused: ['已暂停', 'warn'],
-    cooldown: ['冷却中', 'warn'], degraded: ['异常', 'bad'], invalid: ['已失效', 'bad'],
+    cooldown: ['异常', 'bad'], invalid: ['异常', 'bad'],
   };
   const item = map[status] || [status || '未知', ''];
   return `<span class="badge ${item[1]}">${item[0]}</span>`;
