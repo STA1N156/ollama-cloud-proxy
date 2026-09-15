@@ -137,7 +137,7 @@ export class KeyPool {
 
   concurrencyLimit(key) {
     if (key.base_url !== this.store.defaultUpstreamBaseUrl) return Infinity;
-    return key.tier === 'pro' ? 3 : 10;
+    return key.tier === 'pro' ? 2 : 8;
   }
 
   usesProxyCache(key) {
@@ -160,7 +160,11 @@ export class KeyPool {
       const generation = this.generation;
       const lease = this.tryAcquire(model, excluded, sourceUrl);
       if (lease) return lease;
-      if (lease === null) throw new Error(sourceUrl ? '该 API 地址没有可用密钥' : this.store.errorMessage('api_unavailable'));
+      if (lease === null) {
+        const error = new Error(sourceUrl ? '该 API 地址没有可用密钥' : this.store.errorMessage('api_unavailable'));
+        if (!sourceUrl) error.status = 500;
+        throw error;
+      }
       await this.wait(signal, generation, model, excluded, sourceUrl);
     }
   }
@@ -253,7 +257,7 @@ export class KeyPool {
       ...key,
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,
-      concurrencyLimit: key.base_url === this.store.defaultUpstreamBaseUrl ? (key.tier === 'pro' ? 3 : 10) : null,
+      concurrencyLimit: key.base_url === this.store.defaultUpstreamBaseUrl ? this.concurrencyLimit(key) : null,
       proxyCacheEnabled: this.usesProxyCache(key),
       proxyCacheConfigurable: key.base_url !== this.store.defaultUpstreamBaseUrl,
     }));

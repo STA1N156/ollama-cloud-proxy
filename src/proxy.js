@@ -512,7 +512,7 @@ export class ProxyHandler {
         }
         const errorText = (await upstream.text()).slice(0, 500);
         this.pool.reportFailure(lease.id, upstream, errorText);
-        lastError = new Error(this.store.errorMessage('api_unavailable'));
+        lastError = Object.assign(new Error(this.store.errorMessage('api_unavailable')), { status: 500 });
         lease.release();
         lease = null;
         upstream = null;
@@ -530,7 +530,7 @@ export class ProxyHandler {
     }
 
     if (!upstream || !lease) {
-      return jsonError(res, 502, lastError?.message || this.store.errorMessage('api_unavailable'));
+      return jsonError(res, lastError?.status || (lastError ? 502 : 500), lastError?.message || this.store.errorMessage('api_unavailable'));
     }
 
     const cacheable = supportsLocalCache && lease.useProxyCache;

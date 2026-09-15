@@ -10,7 +10,7 @@ export const errorMessageDefinitions = Object.freeze([
   { key: 'model_not_found', label: '模型不存在', status: 404, defaultValue: '模型不存在：{model}' },
   { key: 'endpoint_not_found', label: '代理接口不存在', status: 404, defaultValue: '接口不存在' },
   { key: 'route_not_found', label: '根路由不存在', status: 404, defaultValue: 'Not found' },
-  { key: 'api_unavailable', label: 'API 暂时不可用', status: 502, defaultValue: 'API 暂时不可用' },
+  { key: 'api_unavailable', label: 'API 暂时不可用', status: 500, defaultValue: 'API 暂时不可用' },
   { key: 'internal_error', label: '服务器内部错误', status: 500, defaultValue: 'Internal server error' },
 ]);
 
