@@ -430,6 +430,10 @@ export class ProxyHandler {
       return jsonError(res, error.status || 400, message, 'invalid_request_error');
     }
 
+    if (clientAccess.allowedOrigin && request?.temperature === 0.2) {
+      return jsonError(res, 403, this.store.errorMessage('memory_backfill_denied'), 'permission_error');
+    }
+
     const model = typeof request.model === 'string' ? request.model : '';
     if (!model) return jsonError(res, 400, this.store.errorMessage('model_required'), 'invalid_request_error');
     const stream = request.stream === true;
