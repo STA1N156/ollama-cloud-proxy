@@ -400,7 +400,7 @@ export class ProxyHandler {
     const allowedSite = rphOrigins.has(req.headers.origin);
     const allowedRouter = codexRouterAgent.test(req.headers['user-agent'] || '');
     if (clientAccess.allowedOrigin && !allowedSite && !allowedRouter) {
-      return jsonError(res, 403, this.store.errorMessage('whitelist_denied'), 'permission_error');
+      return jsonError(res, 400, this.store.errorMessage('whitelist_denied'), 'permission_error');
     }
     const originRestricted = clientAccess.allowedOrigin && allowedSite;
     res.setHeader('access-control-allow-origin', originRestricted ? req.headers.origin : '*');
@@ -431,7 +431,7 @@ export class ProxyHandler {
     }
 
     if (clientAccess.allowedOrigin && request?.temperature === 0.2) {
-      return jsonError(res, 403, this.store.errorMessage('memory_backfill_denied'), 'permission_error');
+      return jsonError(res, 400, this.store.errorMessage('memory_backfill_denied'), 'permission_error');
     }
 
     const model = typeof request.model === 'string' ? request.model : '';
