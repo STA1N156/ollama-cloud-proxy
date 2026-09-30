@@ -6,6 +6,14 @@ const exactTokens = (value) => new Intl.NumberFormat('zh-CN').format(Number(valu
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
 let state = { upstreamKeys: [], clientKeys: [], models: [], errorMessages: [], cache: {} };
 let currentPage = 'keys';
+let currentKeyTab = 'upstream';
+const pages = {
+  keys: ['密钥管理', 'KEYS', '管理上游连接与客户端访问，独立配置每个密钥。'],
+  models: ['模型目录', 'MODELS', '按通道浏览可用模型，发送一条消息检查连接。'],
+  usage: ['额度用量', 'USAGE', '查看 Ollama 账号的已用额度与模型调用，展开卡片查看明细。'],
+  cache: ['缓存策略', 'CACHE', '选择本地前缀缓存或官方缓存，调整命中有效期。'],
+  settings: ['设置', 'SETTINGS', '管理客户端看到的错误提示，随时恢复默认文案。'],
+};
 const loading = new Map();
 
 function toast(message) {
@@ -43,24 +51,26 @@ function badge(status) {
     cooldown: ['异常', 'bad'], invalid: ['异常', 'bad'],
   };
   const item = map[status] || [status || '未知', ''];
-  return `<span class="badge ${item[1]}">${item[0]}</span>`;
+  return `<span class="badge ${item[1]}">${esc(item[0])}</span>`;
 }
 
 function renderKeys() {
+  $('#upstream-count').textContent = state.upstreamKeys.length;
+  $('#client-count').textContent = state.clientKeys.length;
   $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
-    <td><strong>${esc(key.label)}</strong></td><td class="api-url" title="${esc(key.base_url)}"><code>${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
-    <td>${key.tierConfigurable ? `<select class="tier-select" data-upstream-tier data-id="${key.id}" aria-label="${esc(key.label)} 等级"><option value="max" ${key.tier === 'max' ? 'selected' : ''}>MAX · 5</option><option value="pro" ${key.tier === 'pro' ? 'selected' : ''}>PRO · 1</option></select>` : '<span class="muted">—</span>'}</td>
-    <td>${key.proxyCacheConfigurable ? `<button data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.use_proxy_cache}" title="${key.use_proxy_cache && !key.proxyCacheEnabled ? '本地缓存总开关已关闭，当前透传官方缓存' : '本地缓存总开关开启时生效'}">${key.use_proxy_cache ? '已开启' : '未开启'}</button>` : `<span class="badge ${key.proxyCacheEnabled ? 'good' : ''}">${key.proxyCacheEnabled ? '本地缓存' : '官方缓存'}</span>`}</td><td>${badge(key.status)}</td><td>${key.inFlight} / ${key.concurrencyLimit == null ? '不限' : key.concurrencyLimit}${key.enabled ? '' : ' · 暂停'}</td>
-    <td><div class="row-actions"><button data-action="test-upstream" data-id="${key.id}">测试</button><button data-action="toggle-upstream" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-upstream" data-id="${key.id}">删除</button></div></td>
-  </tr>`).join('') : '<tr><td class="empty" colspan="8">请先导入一个上游 API 通道</td></tr>';
+    <td class="identity-cell"><strong title="${esc(key.label)}">${esc(key.label)}</strong><code title="${esc(key.base_url)}">${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
+    <td>${key.tierConfigurable ? `<select class="tier-select" data-upstream-tier data-id="${key.id}" aria-label="${esc(key.label)} 等级"><option value="max" ${key.tier === 'max' ? 'selected' : ''}>MAX · 8</option><option value="pro" ${key.tier === 'pro' ? 'selected' : ''}>PRO · 2</option></select>` : '<span class="badge">外部 API</span>'}</td>
+    <td>${key.proxyCacheConfigurable ? `<button class="cache-toggle ${key.use_proxy_cache ? 'enabled' : ''}" data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.use_proxy_cache}" title="${key.use_proxy_cache && !key.proxyCacheEnabled ? '本地缓存总开关已关闭，当前透传上游缓存' : '本地缓存总开关开启时生效'}">${key.use_proxy_cache ? '本地覆盖' : '上游透传'}</button>` : `<span class="badge ${key.proxyCacheEnabled ? 'good' : ''}">${key.proxyCacheEnabled ? '本地缓存' : '官方缓存'}</span>`}</td><td>${badge(key.status)}</td><td class="load-cell">${key.inFlight} <span>/ ${key.concurrencyLimit == null ? '不限' : key.concurrencyLimit}</span>${key.enabled ? '' : ' · 暂停'}</td>
+    <td><div class="row-actions"><button data-action="test-upstream" data-id="${key.id}">测试</button><button data-action="toggle-upstream" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button class="delete-action" data-action="delete-upstream" data-id="${key.id}">删除</button></div></td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="7">暂无上游通道。点击上方“添加上游通道”开始连接。</td></tr>';
 
   $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
-    <td><strong>${esc(key.label)}</strong></td><td><code>•••• ${esc(key.last4)}</code></td><td title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
+    <td class="identity-cell"><strong title="${esc(key.label)}">${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></td><td class="token-cell" title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
     <td><div class="rate-control" title="流式文字按字符平滑输出，10 约为每 0.1 秒一个字；0 直接透传"><input data-client-rate type="number" min="0" max="1000" value="${Number(key.output_tps) || 0}" aria-label="${esc(key.label)} 输出 token 每秒"><span>token/s</span><button data-action="save-client-rate" data-id="${key.id}">保存</button></div></td>
     <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[3, 5, 10, 15, 20, 25, 30, 35, 40].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
     <td><span class="badge ${key.enabled ? 'good' : 'warn'}" data-client-load="${key.id}" data-enabled="${Boolean(key.enabled)}">${key.enabled ? `${Number(key.in_flight) || 0} 并发` : `暂停 · ${Number(key.in_flight) || 0} 并发`}</span></td>
-    <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button data-action="delete-client" data-id="${key.id}">删除</button></div></td>
-  </tr>`).join('') : '<tr><td class="empty" colspan="7">尚未生成下游访问密钥</td></tr>';
+    <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button class="delete-action" data-action="delete-client" data-id="${key.id}">删除</button></div></td>
+  </tr>`).join('') : '<tr><td class="empty" colspan="6">暂无访问密钥。点击上方“生成访问密钥”供客户端使用。</td></tr>';
 
   $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.clientKeys.some((key) => key.enabled));
   $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
@@ -163,13 +173,19 @@ async function load(page = currentPage, force = false) {
     cache: '/admin/api/cache',
     settings: '/admin/api/error-messages',
   }[page];
+  $(`#page-${page}`).setAttribute('aria-busy', 'true');
+  if (page === currentPage) $('#refresh').disabled = true;
   const job = api(endpoint).then((data) => {
     Object.assign(state, data);
     showApp();
     render(page);
   }).catch((error) => {
     if (!$('#app-view').classList.contains('hidden')) toast(error.message);
-  }).finally(() => loading.delete(page));
+  }).finally(() => {
+    loading.delete(page);
+    $(`#page-${page}`).setAttribute('aria-busy', 'false');
+    $('#refresh').disabled = loading.has(currentPage);
+  });
   loading.set(page, job);
   return job;
 }
@@ -188,18 +204,44 @@ $('#nav').addEventListener('click', (event) => {
   const button = event.target.closest('[data-page]');
   if (!button) return;
   currentPage = button.dataset.page;
-  document.querySelectorAll('#nav button').forEach((item) => item.classList.toggle('active', item === button));
+  document.querySelectorAll('#nav button').forEach((item) => {
+    item.classList.toggle('active', item === button);
+    if (item === button) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
   document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
   $(`#page-${currentPage}`).classList.remove('hidden');
-  $('#page-title').textContent = { keys: '密钥管理', models: '模型目录', usage: 'Token 用量', cache: '缓存管理', settings: '错误提示设置' }[currentPage];
+  [$('#page-title').textContent, $('#page-category').textContent, $('#page-description').textContent] = pages[currentPage];
   $('#clear-usage').classList.toggle('hidden', !['keys', 'models'].includes(currentPage));
   load(currentPage).catch(() => {});
+});
+
+$('.key-tabs').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-key-tab]');
+  if (!button) return;
+  currentKeyTab = button.dataset.keyTab;
+  document.querySelectorAll('[data-key-tab]').forEach((item) => {
+    item.classList.toggle('active', item === button);
+    item.setAttribute('aria-pressed', String(item === button));
+  });
+  $('#key-upstream-panel').classList.toggle('hidden', currentKeyTab !== 'upstream');
+  $('#key-client-panel').classList.toggle('hidden', currentKeyTab !== 'client');
+  if (currentKeyTab === 'client') refreshClientLoad();
 });
 
 $('#upstream-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.target));
-  try { await api('/admin/api/upstream-keys', { method: 'POST', body: JSON.stringify(body) }); event.target.reset(); toast('上游通道已导入，正在同步模型'); await load('keys'); } catch (error) { toast(error.message); }
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    await api('/admin/api/upstream-keys', { method: 'POST', body: JSON.stringify(body) });
+    event.target.reset();
+    event.target.closest('details').open = false;
+    toast('上游通道已导入，正在同步模型');
+    await load('keys');
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
 });
 
 document.addEventListener('change', async (event) => {
@@ -208,7 +250,7 @@ document.addEventListener('change', async (event) => {
   select.disabled = true;
   try {
     await api(`/admin/api/upstream-keys/${select.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ tier: select.value }) });
-    toast(select.value === 'max' ? '已设为 MAX，按5倍权重分配' : '已设为 PRO，按1倍权重分配');
+    toast(select.value === 'max' ? 'MAX：最多 8 并发，按5倍权重分配' : 'PRO：最多 2 并发，按1倍权重分配');
     await load('keys');
   } catch (error) {
     toast(error.message);
@@ -219,13 +261,17 @@ document.addEventListener('change', async (event) => {
 $('#client-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.target));
+  const button = event.submitter;
+  button.disabled = true;
   try {
     const result = await api('/admin/api/client-keys', { method: 'POST', body: JSON.stringify(body) });
     event.target.reset();
+    event.target.closest('details').open = false;
     $('#new-token').textContent = result.token;
     $('#token-dialog').showModal();
     await load('keys');
   } catch (error) { toast(error.message); }
+  finally { button.disabled = false; }
 });
 
 document.addEventListener('click', async (event) => {
@@ -234,6 +280,8 @@ document.addEventListener('click', async (event) => {
   const { action, id, enabled } = button.dataset;
   if (action.startsWith('delete') && !confirm('确定删除吗？此操作不能撤销。')) return;
   button.disabled = true;
+  const label = button.textContent;
+  if (action.startsWith('test')) button.textContent = '测试中…';
   try {
     if (action === 'test-model') {
       await api('/admin/api/models/test', { method: 'POST', body: JSON.stringify({ model: button.dataset.model, sourceUrl: button.dataset.sourceUrl }) });
@@ -276,10 +324,17 @@ document.addEventListener('click', async (event) => {
     if (action === 'test-upstream') await api(`${base}/${id}/test`, { method: 'POST' });
     toast(action === 'test-upstream' ? '密钥连接正常' : '操作已完成');
     await load('keys');
-  } catch (error) { toast(error.message); } finally { button.disabled = false; }
+  } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = label; }
 });
 
-$('#sync-models').addEventListener('click', async () => { try { const result = await api('/admin/api/models/sync', { method: 'POST' }); toast(`已同步 ${result.count} 个模型`); await load('models'); } catch (error) { toast(error.message); } });
+$('#sync-models').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = '同步中…';
+  try { const result = await api('/admin/api/models/sync', { method: 'POST' }); toast(`已同步 ${result.count} 个模型`); await load('models'); }
+  catch (error) { toast(error.message); }
+  finally { button.disabled = false; button.textContent = '立即同步'; }
+});
 $('#error-settings-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = event.submitter;
@@ -345,7 +400,7 @@ $('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
 
 let clientLoadPending = false;
 async function refreshClientLoad() {
-  if (clientLoadPending || currentPage !== 'keys' || $('#app-view').classList.contains('hidden')) return;
+  if (clientLoadPending || document.hidden || currentPage !== 'keys' || currentKeyTab !== 'client' || $('#app-view').classList.contains('hidden')) return;
   clientLoadPending = true;
   try {
     const { clientInFlight = {} } = await api('/admin/api/client-load');

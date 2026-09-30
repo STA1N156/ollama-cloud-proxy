@@ -95,7 +95,7 @@ export class AdminHandler {
         ...(ollama ? { 'content-type': 'application/json' } : {}),
       },
       body: ollama ? JSON.stringify({
-        model: 'deepseek-v4-flash:0731',
+        model: 'deepseek-v4.1-flash',
         messages: [{ role: 'user', content: '请只回复 OK' }],
         stream: false,
         max_tokens: 8,

@@ -65,9 +65,10 @@ export function buildFingerprint(endpoint, request, key) {
 export function cachedTokenCount(hit, promptTokens, totalWeight) {
   const total = Math.max(0, Number(promptTokens) || 0);
   if (!hit?.matched || !total || !totalWeight) return 0;
-  if (hit.exact) return total;
-  if (hit.observedTokens > 0) return Math.min(total, hit.observedTokens);
-  return Math.min(total, Math.floor(total * hit.weight / totalWeight));
+  const limit = Math.floor(total * 998 / 1000);
+  if (hit.exact) return limit;
+  if (hit.observedTokens > 0) return Math.min(limit, hit.observedTokens);
+  return Math.min(limit, Math.floor(total * hit.weight / totalWeight));
 }
 
 export class CacheLedger {
