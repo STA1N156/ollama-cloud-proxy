@@ -41,7 +41,7 @@ export const config = {
   quotaSyncUrl,
   quotaSyncIntervalMs: duration('QUOTA_SYNC_INTERVAL', 2 * 60_000),
   maxRequestBytes: integer('MAX_REQUEST_BYTES', 32 * 1024 * 1024),
-  responseHeaderTimeoutMs: duration('RESPONSE_HEADER_TIMEOUT', 600_000),
+  responseHeaderTimeoutMs: duration('RESPONSE_HEADER_TIMEOUT', 1_200_000),
   retryCount: Math.min(10, integer('UPSTREAM_RETRIES', 10)),
   upstreamKeys: list('OLLAMA_API_KEYS'),
   clientKeys: list('PROXY_API_KEYS'),
