@@ -25,7 +25,8 @@ const list = (name) => (process.env[name] ?? '')
 
 const dataDir = path.resolve(process.env.DATA_DIR || './data');
 const upstreamBaseUrl = (process.env.UPSTREAM_BASE_URL || 'https://ollama.com/v1').replace(/\/$/, '');
-const quotaSyncUrl = process.env.QUOTA_SYNC_URL || new URL('/api/usage', `${upstreamBaseUrl}/`).toString();
+const quotaSyncUrl = (process.env.QUOTA_SYNC_URL || new URL('/api/balance', `${upstreamBaseUrl}/`).toString())
+  .replace(/^https:\/\/ollama\.com\/api\/usage\/?$/, 'https://ollama.com/api/balance');
 
 export const config = {
   host: process.env.HOST || '0.0.0.0',

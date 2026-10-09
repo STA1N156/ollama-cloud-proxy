@@ -129,14 +129,14 @@ function renderUsage() {
   };
   const meter = (label, period, maxMs) => {
     const used = percent(period?.usage);
-    const calls = (period?.models || []).reduce((sum, item) => sum + Number(item.requestCount || 0), 0);
+    const reset = period?.resetsAt ? new Date(period.resetsAt) : null;
+    const resetText = reset && Number.isFinite(reset.getTime())
+      ? `重置：${reset.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}`
+      : '重置时间暂不可用';
     return `<div class="quota-meter"><div class="quota-meter-label"><span>${label}</span><strong>${used.toFixed(1)}%</strong></div>
       <progress class="quota-progress ${tone(used)}" max="100" value="${used}" aria-label="${label}已用 ${used.toFixed(1)}%"></progress>
-      <div class="quota-meter-note"><span>${exhaustion(period, maxMs)}</span><span>${exactTokens(calls)} 次模型调用</span></div></div>`;
+      <div class="quota-meter-note"><span>${exhaustion(period, maxMs)}</span><span title="按浏览器本地时区显示">${esc(resetText)}</span></div></div>`;
   };
-  const modelList = (label, items = []) => `<section class="quota-model-list"><h4>${label}</h4>${items.length ? [...items]
-    .sort((a, b) => Number(b.requestCount) - Number(a.requestCount))
-    .map((item) => `<div class="quota-model-row"><code title="${esc(item.name)}">${esc(item.name)}</code><strong>${exactTokens(item.requestCount)} 次</strong></div>`).join('') : '<p>暂无模型调用</p>'}</section>`;
   const keys = state.upstreamKeys || [];
   $('#quota-grid').innerHTML = keys.length ? keys.map((key) => {
     const quota = key.quota;
@@ -148,11 +148,9 @@ function renderUsage() {
       quota.weekly && ['本周额度', quota.weekly, 7 * 24 * 60 * 60_000],
       quota.monthly && ['本月额度', quota.monthly, 31 * 24 * 60 * 60_000],
     ].filter(Boolean);
-    const details = quota.weekly ? ['本周', quota.weekly] : quota.monthly ? ['本月', quota.monthly] : ['当前 5 小时', quota.session];
     return `<article class="quota-card"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div>
       <div><span class="badge ${key.tier === 'max' ? 'good' : ''}">${String(key.tier || 'max').toUpperCase()}</span>${badge(key.status)}</div></div>
-      <div class="quota-meters">${periods.map((period) => meter(...period)).join('')}</div>${error}
-      <details class="quota-details"><summary>查看${details[0]}模型调用明细<span>按次数从高到低</span></summary>${modelList(details[0], details[1]?.models)}</details></article>`;
+      <div class="quota-meters">${periods.map((period) => meter(...period)).join('')}</div>${error}</article>`;
   }).join('') : '<div class="empty">还没有添加 Ollama Cloud 密钥</div>';
 }
 

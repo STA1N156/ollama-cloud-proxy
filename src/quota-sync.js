@@ -1,20 +1,26 @@
 const usage = (value) => Math.min(1, Math.max(0, Number(value) || 0));
 
-const models = (items) => (Array.isArray(items) ? items : [])
-  .map((item) => ({ name: String(item?.name || ''), requestCount: Math.max(0, Number(item?.request_count) || 0) }))
-  .filter((item) => item.name)
-  .sort((a, b) => b.requestCount - a.requestCount || a.name.localeCompare(b.name));
+const period = (used, reset) => ({
+  usage: usage(used),
+  resetsAt: typeof reset === 'string' && Number.isFinite(Date.parse(reset)) ? new Date(reset).toISOString() : null,
+});
 
 const normalize = (data) => {
-  const normalized = {};
-  for (const period of ['session', 'weekly', 'monthly']) {
-    const value = data?.limits?.[period];
-    if (Number.isFinite(Number(value?.usage))) {
-      normalized[period] = { usage: usage(value.usage), models: models(value.models) };
+  const included = data?.included;
+  if (included?.session || included?.weekly) {
+    const normalized = {};
+    for (const name of ['session', 'weekly']) {
+      const value = included[name];
+      const remaining = value?.remaining_percent;
+      if (!Number.isFinite(remaining) || remaining < 0 || remaining > 100) throw new Error('额度接口返回格式不正确');
+      normalized[name] = period((100 - remaining) / 100, value.resets_at);
     }
+    return normalized;
   }
-  if (!Object.keys(normalized).length) throw new Error('额度接口返回格式不正确');
-  return normalized;
+  if (Number.isFinite(included?.balance_usd) && Number.isFinite(included?.allowance_usd) && included.allowance_usd >= 0) {
+    return { monthly: period(included.allowance_usd > 0 ? 1 - included.balance_usd / included.allowance_usd : 1, included.period?.until) };
+  }
+  throw new Error('额度接口返回格式不正确');
 };
 
 export class QuotaSync {

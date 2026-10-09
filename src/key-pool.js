@@ -231,6 +231,7 @@ export class KeyPool {
       quota = { ...quota };
       for (const [period, maxMs] of Object.entries({ session: FIVE_HOURS_MS, weekly: WEEK_MS, monthly: MONTH_MS })) {
         if (!quota[period]) continue;
+        if (key.quota?.[period]?.resetsAt !== quota[period].resetsAt) key.quotaHistory[period] = [];
         key.quotaHistory[period] ||= [];
         quota[period] = {
           ...quota[period],
