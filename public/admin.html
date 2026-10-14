@@ -99,8 +99,9 @@
           <form class="panel cache-settings" id="cache-settings-form">
             <div class="panel-head"><div><h3>基础前缀缓存</h3><p>相同内容与连续对话前缀命中，不使用 RP 分块</p></div><span class="badge" id="cache-status">读取中</span></div>
             <div class="cache-fields">
-              <label class="cache-option"><span><strong>使用本地缓存</strong><small>开启：用本地命中覆盖缓存 token，最高 99.8%。关闭：直接透传上游官方 usage。</small></span><input id="cache-enabled" type="checkbox" role="switch" aria-label="使用本地缓存"></label>
+              <label class="cache-option"><span><strong>使用本地缓存</strong><small>开启：用本地命中覆盖缓存 token。关闭：直接透传上游官方 usage。</small></span><input id="cache-enabled" type="checkbox" role="switch" aria-label="使用本地缓存"></label>
               <label class="cache-option"><span><strong>缓存有效期</strong><small>默认 10 分钟，可设置 1 分钟到 7 天。</small></span><span class="cache-duration"><input id="cache-ttl" type="number" min="1" max="10080" step="1" value="10" required aria-label="缓存有效期（分钟）"><span>分钟</span></span></label>
+              <label class="cache-option"><span><strong>最大缓存命中率</strong><small>默认 99.8%；0 不回报本地命中，100 允许全量命中。</small></span><span class="cache-duration"><input id="cache-max-hit" type="number" min="0" max="100" step="0.1" value="99.8" required aria-label="最大缓存命中率（百分比）"><span>%</span></span></label>
               <p class="cache-help">总开关开启后，Ollama 使用本地缓存；第三方通道需在密钥页选择“本地覆盖”才会生效。修改时长只影响新写入或再次命中的缓存，已有数据按原时间过期。</p>
             </div>
             <div class="settings-actions"><span>保存后新请求立即生效，进行中的请求保持原方式</span><button class="primary" type="submit">保存设置</button></div>

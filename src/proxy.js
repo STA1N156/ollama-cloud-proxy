@@ -207,7 +207,7 @@ function cacheRequest(request) {
   return selected;
 }
 
-function usageFromObject(object, hit, totalWeight, injectCache = true) {
+function usageFromObject(object, hit, totalWeight, injectCache = true, maxHitPercent = 99.8) {
   const usage = object?.usage || object?.response?.usage;
   if (!usage || typeof usage !== 'object') return null;
 
@@ -218,7 +218,7 @@ function usageFromObject(object, hit, totalWeight, injectCache = true) {
   const detailKey = chat ? 'prompt_tokens_details' : 'input_tokens_details';
   const details = usage[detailKey] && typeof usage[detailKey] === 'object' ? usage[detailKey] : {};
   const upstreamCached = Number(details.cached_tokens) || 0;
-  const cachedTokens = Math.min(promptTokens, injectCache ? cachedTokenCount(hit, promptTokens, totalWeight) : upstreamCached);
+  const cachedTokens = Math.min(promptTokens, injectCache ? cachedTokenCount(hit, promptTokens, totalWeight, maxHitPercent) : upstreamCached);
   if (injectCache) usage[detailKey] = { ...details, cached_tokens: cachedTokens };
   return { promptTokens, completionTokens, totalTokens, cachedTokens };
 }
@@ -236,7 +236,7 @@ function mergeUsage(current, next) {
   };
 }
 
-export function injectUsage(data, hit, totalWeight, injectCache = true) {
+export function injectUsage(data, hit, totalWeight, injectCache = true, maxHitPercent = 99.8) {
   let object;
   try {
     object = JSON.parse(data);
@@ -244,7 +244,7 @@ export function injectUsage(data, hit, totalWeight, injectCache = true) {
     return { data, usage: null, usageOnly: false, reasoningNormalized: false };
   }
   const reasoningNormalized = normalizeReasoning(object);
-  const usage = usageFromObject(object, hit, totalWeight, injectCache);
+  const usage = usageFromObject(object, hit, totalWeight, injectCache, maxHitPercent);
   const usageOnly = Boolean(usage && Array.isArray(object.choices) && object.choices.length === 0);
   return { data: JSON.stringify(object), usage, usageOnly, reasoningNormalized };
 }
@@ -263,7 +263,7 @@ async function patchSseEvent(event, resolveCache, forwardUsage, injectCache, cou
   const cache = rawUsage && typeof rawUsage === 'object' && injectCache
     ? await resolveCache()
     : { hit: null, fingerprint: { totalWeight: 0 } };
-  const usage = usageFromObject(object, cache.hit, cache.fingerprint.totalWeight, injectCache);
+  const usage = usageFromObject(object, cache.hit, cache.fingerprint.totalWeight, injectCache, cache.maxHitPercent);
   const usageOnly = Boolean(usage && Array.isArray(object.choices) && object.choices.length === 0);
   const done = object?.type === 'response.completed' || object?.response?.status === 'completed';
   const outputCharacters = countOutput ? outputCharacterCount(object) : 0;
@@ -451,14 +451,16 @@ export class ProxyHandler {
     let internal400Retries = 0;
     let ordinaryFailures = 0;
     let cacheJob;
+    const maxHitPercent = this.store.cacheSettings.maxHitPercent;
     const cacheState = { value: null };
     const cacheFallback = {
+      maxHitPercent,
       fingerprint: { endpoint: url.pathname, entries: [], totalWeight: 0 },
       hit: { matched: false, exact: false, weight: 0, observedTokens: 0 },
     };
     const startCache = () => {
       if (!cacheJob) cacheJob = this.ledger.resolve(url.pathname, cacheRequest(request), model).then(
-        (value) => { cacheState.value = value; return value; },
+        (value) => { cacheState.value = { ...value, maxHitPercent }; return cacheState.value; },
         (error) => { cacheState.value = cacheFallback; console.error('cache lookup failed:', error.message); return cacheFallback; },
       );
       return cacheJob;
@@ -564,7 +566,7 @@ export class ProxyHandler {
         const input = bufferedUpstreamBody ?? await upstream.text();
         const cache = cacheable && upstream.ok ? await startCache() : cacheFallback;
         copyResponseHeaders(upstream, res, cache.hit, cacheable);
-        const patched = upstream.ok ? injectUsage(input, cache.hit, cache.fingerprint.totalWeight, cacheable) : { data: input, usage: null };
+        const patched = upstream.ok ? injectUsage(input, cache.hit, cache.fingerprint.totalWeight, cacheable, maxHitPercent) : { data: input, usage: null };
         usage = patched.usage;
         lease.release();
         if (upstream.ok && clientAccess.outputTps && usage?.completionTokens) {

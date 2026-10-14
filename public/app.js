@@ -94,6 +94,7 @@ function render(page = currentPage) {
 function renderCache() {
   $('#cache-enabled').checked = Boolean(state.cache.enabled);
   $('#cache-ttl').value = state.cache.ttlMs / 60_000;
+  $('#cache-max-hit').value = state.cache.maxHitPercent ?? 99.8;
   $('#cache-status').textContent = state.cache.enabled ? '本地缓存已开启' : '使用官方缓存';
   $('#cache-status').className = `badge ${state.cache.enabled ? 'good' : ''}`;
   $('#cache-entries').textContent = exactTokens(state.cache.entries);
@@ -115,27 +116,36 @@ function renderModels() {
 function renderUsage() {
   const percent = (value) => Math.min(100, Math.max(0, Number(value) * 100));
   const tone = (value) => value >= 90 ? 'bad' : value >= 70 ? 'warn' : '';
-  const exhaustion = (period, maxMs) => {
-    if (percent(period?.usage) >= 100) return '已耗尽';
-    const remainingMs = Number(period?.exhaustionMs);
-    if (!Number.isFinite(remainingMs) || remainingMs <= 0 || remainingMs > maxMs) return '暂无法估算';
-    const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
-    const days = Math.floor(totalMinutes / 1440);
-    const hours = Math.floor(totalMinutes % 1440 / 60);
-    const minutes = totalMinutes % 60;
-    if (days) return `约 ${days}天${hours ? `${hours}小时` : ''}${minutes ? `${minutes}分` : ''}后耗尽`;
-    if (hours) return `约 ${hours}小时${minutes ? `${minutes}分` : ''}后耗尽`;
-    return `约 ${minutes || 1}分后耗尽`;
-  };
-  const meter = (label, period, maxMs) => {
+  const pace = (period) => {
+    const start = Date.parse(period?.startsAt);
+    const reset = Date.parse(period?.resetsAt);
+    const now = Date.now();
+    if (!Number.isFinite(start) || !Number.isFinite(reset) || reset <= start) return { text: '周期信息不足，暂无法判断', tone: '' };
+    if (now >= reset) return { text: '已到重置时间，等待额度刷新', tone: '' };
     const used = percent(period?.usage);
+    if (now <= start) return { text: '周期刚开始，暂无法判断', tone: '' };
+    const elapsed = (now - start) / (reset - start) * 100;
+    const projected = used / elapsed * 100;
+    return {
+      text: `期望用量 ${projected.toLocaleString('zh-CN', { maximumFractionDigits: 1, useGrouping: false })}%`,
+      tone: projected > 100 ? 'bad' : 'good',
+      detail: `周期已过 ${elapsed.toFixed(1)}%，额度已用 ${used.toFixed(1)}%；按本周期平均速度推算，超过 100% 表示可能提前耗尽`,
+    };
+  };
+  const meter = (label, period) => {
+    const used = percent(period?.usage);
+    const status = pace(period);
     const reset = period?.resetsAt ? new Date(period.resetsAt) : null;
-    const resetText = reset && Number.isFinite(reset.getTime())
-      ? `重置：${reset.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}`
-      : '重置时间暂不可用';
+    const remaining = reset ? reset.getTime() - Date.now() : NaN;
+    const hours = Math.floor(remaining / 3_600_000);
+    const resetText = !Number.isFinite(remaining) ? '重置时间暂不可用'
+      : remaining <= 0 ? '等待重置刷新'
+        : hours < 1 ? '＜1小时'
+          : hours < 24 ? `${hours}小时后` : `${Math.floor(hours / 24)}天${hours % 24}小时后`;
+    const resetTitle = Number.isFinite(remaining) ? `重置时间：${reset.toLocaleString('zh-CN', { hour12: false })}` : '';
     return `<div class="quota-meter"><div class="quota-meter-label"><span>${label}</span><strong>${used.toFixed(1)}%</strong></div>
       <progress class="quota-progress ${tone(used)}" max="100" value="${used}" aria-label="${label}已用 ${used.toFixed(1)}%"></progress>
-      <div class="quota-meter-note"><span>${exhaustion(period, maxMs)}</span><span title="按浏览器本地时区显示">${esc(resetText)}</span></div></div>`;
+      <div class="quota-meter-note"><span class="quota-pace ${status.tone}" title="${esc(status.detail || '')}">${esc(status.text)}</span><span title="${esc(resetTitle)}">${esc(resetText)}</span></div></div>`;
   };
   const keys = state.upstreamKeys || [];
   $('#quota-grid').innerHTML = keys.length ? keys.map((key) => {
@@ -144,9 +154,9 @@ function renderUsage() {
     if (!quota) return `<article class="quota-card quota-unavailable"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div><div>${badge(key.status)}</div></div>
       <div class="quota-wait"><strong>暂未读取到额度</strong><span>${esc(key.quotaError || '正在等待首次同步')}</span></div></article>`;
     const periods = [
-      quota.session && ['当前 5 小时', quota.session, 5 * 60 * 60_000],
-      quota.weekly && ['本周额度', quota.weekly, 7 * 24 * 60 * 60_000],
-      quota.monthly && ['本月额度', quota.monthly, 31 * 24 * 60 * 60_000],
+      quota.session && ['当前 5 小时', quota.session],
+      quota.weekly && ['本周额度', quota.weekly],
+      quota.monthly && ['本月额度', quota.monthly],
     ].filter(Boolean);
     return `<article class="quota-card"><div class="quota-card-head"><div><strong>${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></div>
       <div><span class="badge ${key.tier === 'max' ? 'good' : ''}">${String(key.tier || 'max').toUpperCase()}</span>${badge(key.status)}</div></div>
@@ -373,7 +383,7 @@ $('#cache-settings-form').addEventListener('submit', async (event) => {
   const controls = [...event.currentTarget.querySelectorAll('input, button')];
   controls.forEach((item) => { item.disabled = true; });
   try {
-    const result = await api('/admin/api/cache', { method: 'PATCH', body: JSON.stringify({ enabled: $('#cache-enabled').checked, ttlMs: Number($('#cache-ttl').value) * 60_000 }) });
+    const result = await api('/admin/api/cache', { method: 'PATCH', body: JSON.stringify({ enabled: $('#cache-enabled').checked, ttlMs: Number($('#cache-ttl').value) * 60_000, maxHitPercent: Number($('#cache-max-hit').value) }) });
     Object.assign(state.cache, result.cache);
     renderCache();
     toast('缓存设置已保存');

@@ -62,10 +62,10 @@ export function buildFingerprint(endpoint, request, key) {
   return { endpoint, entries, totalWeight: weight };
 }
 
-export function cachedTokenCount(hit, promptTokens, totalWeight) {
+export function cachedTokenCount(hit, promptTokens, totalWeight, maxHitPercent = 99.8) {
   const total = Math.max(0, Number(promptTokens) || 0);
   if (!hit?.matched || !total || !totalWeight) return 0;
-  const limit = Math.floor(total * 998 / 1000);
+  const limit = Math.floor(total * maxHitPercent / 100);
   if (hit.exact) return limit;
   if (hit.observedTokens > 0) return Math.min(limit, hit.observedTokens);
   return Math.min(limit, Math.floor(total * hit.weight / totalWeight));
@@ -134,12 +134,15 @@ export class CacheLedger {
   async configure(settings) {
     const invalid = (message) => Object.assign(new Error(message), { status: 400 });
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)
-      || Object.keys(settings).some((key) => !['enabled', 'ttlMs'].includes(key))) {
+      || Object.keys(settings).some((key) => !['enabled', 'ttlMs', 'maxHitPercent'].includes(key))) {
       throw invalid('缓存设置格式不正确');
     }
     if (Object.hasOwn(settings, 'enabled') && typeof settings.enabled !== 'boolean') throw invalid('开启状态必须为布尔值');
     if (Object.hasOwn(settings, 'ttlMs') && (!Number.isSafeInteger(settings.ttlMs) || settings.ttlMs < 60_000 || settings.ttlMs > 7 * 24 * 60 * 60_000)) {
       throw invalid('缓存时间须在 1 分钟到 7 天之间');
+    }
+    if (Object.hasOwn(settings, 'maxHitPercent') && (!Number.isFinite(settings.maxHitPercent) || settings.maxHitPercent < 0 || settings.maxHitPercent > 100)) {
+      throw invalid('最大缓存命中率须在 0% 到 100% 之间');
     }
     this.store.cacheSettings = await this.request('configure', { settings });
     return this.store.cacheSettings;

@@ -1,8 +1,9 @@
 const usage = (value) => Math.min(1, Math.max(0, Number(value) || 0));
 
-const period = (used, reset) => ({
+const period = (used, reset, start) => ({
   usage: usage(used),
   resetsAt: typeof reset === 'string' && Number.isFinite(Date.parse(reset)) ? new Date(reset).toISOString() : null,
+  startsAt: typeof start === 'string' && Number.isFinite(Date.parse(start)) ? new Date(start).toISOString() : null,
 });
 
 const normalize = (data) => {
@@ -13,12 +14,15 @@ const normalize = (data) => {
       const value = included[name];
       const remaining = value?.remaining_percent;
       if (!Number.isFinite(remaining) || remaining < 0 || remaining > 100) throw new Error('额度接口返回格式不正确');
-      normalized[name] = period((100 - remaining) / 100, value.resets_at);
+      const duration = name === 'session' ? 5 * 60 * 60_000 : 7 * 24 * 60 * 60_000;
+      const reset = Date.parse(value.resets_at);
+      const start = Number.isFinite(reset) ? new Date(reset - duration).toISOString() : null;
+      normalized[name] = period((100 - remaining) / 100, value.resets_at, start);
     }
     return normalized;
   }
   if (Number.isFinite(included?.balance_usd) && Number.isFinite(included?.allowance_usd) && included.allowance_usd >= 0) {
-    return { monthly: period(included.allowance_usd > 0 ? 1 - included.balance_usd / included.allowance_usd : 1, included.period?.until) };
+    return { monthly: period(included.allowance_usd > 0 ? 1 - included.balance_usd / included.allowance_usd : 1, included.period?.until, included.period?.from) };
   }
   throw new Error('额度接口返回格式不正确');
 };

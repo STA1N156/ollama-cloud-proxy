@@ -1,7 +1,3 @@
-const FIVE_HOURS_MS = 5 * 60 * 60_000;
-const WEEK_MS = 7 * 24 * 60 * 60_000;
-const MONTH_MS = 31 * 24 * 60 * 60_000;
-
 const retryAfterMs = (response) => {
   const raw = response.headers.get('retry-after');
   if (!raw) return 30_000;
@@ -9,41 +5,6 @@ const retryAfterMs = (response) => {
   if (Number.isFinite(seconds)) return Math.max(1000, seconds * 1000);
   const date = Date.parse(raw);
   return Number.isFinite(date) ? Math.max(1000, date - Date.now()) : 30_000;
-};
-
-export function estimateQuotaExhaustion(history, maxMs = WEEK_MS) {
-  let points = history.filter((point) => Number.isFinite(point.at) && Number.isFinite(point.usage));
-  let resetAt = 0;
-  for (let index = 1; index < points.length; index += 1) {
-    if (points[index].usage < points[index - 1].usage - 0.001) resetAt = index;
-  }
-  points = points.slice(resetAt).slice(-6);
-  if (points.length < 3) return null;
-  const origin = points[0].at;
-  const xMean = points.reduce((sum, point) => sum + point.at - origin, 0) / points.length;
-  const yMean = points.reduce((sum, point) => sum + point.usage, 0) / points.length;
-  let numerator = 0;
-  let denominator = 0;
-  for (const point of points) {
-    const x = point.at - origin - xMean;
-    numerator += x * (point.usage - yMean);
-    denominator += x * x;
-  }
-  const rate = denominator ? numerator / denominator : 0;
-  const current = points.at(-1).usage;
-  if (current >= 1) return 0;
-  const spread = Math.max(...points.map((point) => point.usage)) - Math.min(...points.map((point) => point.usage));
-  if (spread < 0.0001) return null;
-  if (!(rate > 0)) return null;
-  const remaining = (1 - current) / rate;
-  return Number.isFinite(remaining) && remaining > 0 && remaining <= maxMs ? Math.round(remaining) : null;
-}
-
-const updateQuotaHistory = (history, usage, at, maxMs) => {
-  if (!Number.isFinite(usage)) return null;
-  history.push({ usage, at });
-  if (history.length > 8) history.shift();
-  return estimateQuotaExhaustion(history, maxMs);
 };
 
 export class KeyPool {
@@ -227,17 +188,6 @@ export class KeyPool {
     key.quotaCheckedAt = Date.now();
     key.quotaError = error.slice(0, 300);
     if (quota) {
-      key.quotaHistory ||= {};
-      quota = { ...quota };
-      for (const [period, maxMs] of Object.entries({ session: FIVE_HOURS_MS, weekly: WEEK_MS, monthly: MONTH_MS })) {
-        if (!quota[period]) continue;
-        if (key.quota?.[period]?.resetsAt !== quota[period].resetsAt) key.quotaHistory[period] = [];
-        key.quotaHistory[period] ||= [];
-        quota[period] = {
-          ...quota[period],
-          exhaustionMs: updateQuotaHistory(key.quotaHistory[period], Number(quota[period].usage), key.quotaCheckedAt, maxMs),
-        };
-      }
       const sessionUsage = Number(quota.session?.usage);
       const blocked = Number.isFinite(sessionUsage) && sessionUsage >= 0.95;
       if (blocked !== key.session_quota_blocked) {
@@ -254,7 +204,7 @@ export class KeyPool {
   }
 
   snapshot() {
-    return [...this.keys.values()].map(({ secret, secret_hash, quotaHistory, ...key }) => ({
+    return [...this.keys.values()].map(({ secret, secret_hash, ...key }) => ({
       ...key,
       tier: key.tier === 'pro' ? 'pro' : 'max',
       tierConfigurable: key.base_url === this.store.defaultUpstreamBaseUrl,

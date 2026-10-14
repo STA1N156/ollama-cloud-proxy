@@ -151,6 +151,8 @@ tbody tr:hover { background: #fcfdfd; }
 .quota-progress.bad::-webkit-progress-value { background: #cb7373; }
 .quota-progress.bad::-moz-progress-bar { background: #cb7373; }
 .quota-meter-note { flex-wrap: wrap; color: #7d8f98; font-size: 11px; }
+.quota-pace.good { color: #43998a; }
+.quota-pace.bad { color: #cb7373; }
 .quota-error { margin: -3px 20px 16px; padding: 10px; border-radius: 7px; color: var(--warn); background: var(--warn-bg); font-size: 11px; overflow-wrap: anywhere; }
 .quota-wait { min-height: 160px; padding: 22px; display: grid; place-content: center; gap: 8px; text-align: center; }
 .quota-wait strong { font-size: 13px; font-weight: 500; }

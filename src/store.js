@@ -128,7 +128,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_cache_updated ON prompt_cache(updated_at);
     `);
     const cachePolicy = this.db.prepare("SELECT value FROM cache_settings WHERE key='policy'").get();
-    this.cacheSettings = cachePolicy ? JSON.parse(cachePolicy.value) : { enabled: true, ttlMs: 10 * 60_000 };
+    this.cacheSettings = { enabled: true, ttlMs: 10 * 60_000, maxHitPercent: 99.8, ...(cachePolicy ? JSON.parse(cachePolicy.value) : {}) };
     const clientColumns = this.db.prepare('PRAGMA table_info(client_keys)').all();
     if (!clientColumns.some((column) => column.name === 'token_secret')) {
       this.db.exec("ALTER TABLE client_keys ADD COLUMN token_secret TEXT NOT NULL DEFAULT ''");
