@@ -16,7 +16,7 @@ const clientAccessMode = (value) => {
   if (['https://sta1n156.github.io', 'codex-router'].includes(mode)) {
     return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: 0 };
   }
-  const limit = Number(mode.match(/^limit:(3|5|10|15|20|25|30|35|40)$/)?.[1]);
+  const limit = Number(mode.match(/^limit:(3|5|10|15|20|25|30|35|40|120)$/)?.[1]);
   if (!limit) throw new Error('不支持的访问控制模式');
   return { allowedOrigin: 'https://sta1n156.github.io', concurrencyLimit: limit };
 };

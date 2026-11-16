@@ -75,7 +75,7 @@
               <form class="inline-form client-form" id="client-form">
                 <label>密钥名称<input name="label" placeholder="客户或应用名称" required></label>
                 <label>输出速度 · token/s<input name="outputTps" type="number" min="0" max="1000" value="0"></label>
-                <label>访问控制<select name="allowedOrigin"><option value="">不启用白名单（默认）</option><option value="https://sta1n156.github.io">白名单</option><option value="limit:3">白名单 + 3 并发</option><option value="limit:5">白名单 + 5 并发</option><option value="limit:10">白名单 + 10 并发</option><option value="limit:15">白名单 + 15 并发</option><option value="limit:20">白名单 + 20 并发</option><option value="limit:25">白名单 + 25 并发</option><option value="limit:30">白名单 + 30 并发</option><option value="limit:35">白名单 + 35 并发</option><option value="limit:40">白名单 + 40 并发</option></select></label>
+                <label>访问控制<select name="allowedOrigin"><option value="">不启用白名单（默认）</option><option value="https://sta1n156.github.io">白名单</option><option value="limit:3">白名单 + 3 并发</option><option value="limit:5">白名单 + 5 并发</option><option value="limit:10">白名单 + 10 并发</option><option value="limit:15">白名单 + 15 并发</option><option value="limit:20">白名单 + 20 并发</option><option value="limit:25">白名单 + 25 并发</option><option value="limit:30">白名单 + 30 并发</option><option value="limit:35">白名单 + 35 并发</option><option value="limit:40">白名单 + 40 并发</option><option value="limit:120">白名单 + 120 并发</option></select></label>
                 <button class="primary">生成密钥</button>
                 <p class="form-hint">输出速度设为 0 时直接透传；白名单并发模式会立即拒绝超出上限的请求。</p>
               </form>
@@ -129,6 +129,6 @@
 
   <dialog id="token-dialog" aria-labelledby="token-title"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3 id="token-title">访问密钥已生成</h3><p class="muted">复制到客户端即可使用。以后也可在密钥列表中复制，请勿公开分享。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">完成</button></div></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/admin/app.js?v=28"></script>
+  <script type="module" src="/admin/app.js?v=29"></script>
 </body>
 </html>
