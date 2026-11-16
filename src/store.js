@@ -107,6 +107,17 @@ export class Store {
         total_tokens INTEGER NOT NULL DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS client_model_usage (
+        client_key_id INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (client_key_id, model)
+      );
+
       CREATE TABLE IF NOT EXISTS usage_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL

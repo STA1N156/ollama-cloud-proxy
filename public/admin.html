@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cloud Proxy · 管理后台</title>
-  <link rel="stylesheet" href="/admin/style.css?v=21">
+  <link rel="stylesheet" href="/admin/style.css?v=22">
 </head>
 <body>
   <section class="login-shell" id="login-view">
@@ -92,6 +92,10 @@
         </section>
 
         <section class="page hidden" id="page-usage">
+          <div class="panel">
+            <div class="panel-head"><div><h3>模型调用来源</h3><p id="model-usage-note">按下游密钥汇总，从启用记录后累计</p></div><select id="usage-model-filter" aria-label="筛选统计模型"><option value="">全部模型</option></select></div>
+            <div id="client-model-usage"></div>
+          </div>
           <div class="quota-grid" id="quota-grid"></div>
         </section>
 
@@ -125,6 +129,6 @@
 
   <dialog id="token-dialog" aria-labelledby="token-title"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3 id="token-title">访问密钥已生成</h3><p class="muted">复制到客户端即可使用。以后也可在密钥列表中复制，请勿公开分享。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">完成</button></div></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/admin/app.js?v=27"></script>
+  <script type="module" src="/admin/app.js?v=28"></script>
 </body>
 </html>

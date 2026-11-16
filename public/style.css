@@ -186,6 +186,14 @@ tbody tr:hover { background: #fcfdfd; }
 .settings-actions button { flex: none; font-size: 12px; }
 dialog { width: min(520px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 18px; background: var(--paper); color: var(--ink); box-shadow: 0 24px 90px #15343130; }
 dialog::backdrop { background: #183e3d50; }
+#page-usage > .panel { margin-bottom: 20px; }
+.usage-key + .usage-key { border-top: 1px solid var(--line); }
+.usage-key summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px; cursor: pointer; font-size: 13px; }
+.usage-key summary > span:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.usage-key summary > span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-key summary code { color: var(--muted); font-size: 11px; }
+.usage-key table td:not(:first-child) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#usage-model-filter { max-width: 220px; }
 .dialog-card { padding: 32px; }
 .dialog-card h3 { font-size: 23px; }
 .dialog-card .muted { margin: 12px 0 0; font-size: 12px; line-height: 1.8; }

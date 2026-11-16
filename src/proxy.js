@@ -532,6 +532,7 @@ export class ProxyHandler {
     }
 
     if (!upstream || !lease) {
+      this.usage.record({ clientKeyId, model });
       return jsonError(res, lastError?.status || (lastError ? 502 : 500), lastError?.message || this.store.errorMessage('api_unavailable'));
     }
 
@@ -588,6 +589,7 @@ export class ProxyHandler {
       });
       this.usage.record({
         clientKeyId,
+        model,
         promptTokens: usage?.promptTokens || 0,
         completionTokens: usage?.completionTokens || 0,
         cachedTokens: usage?.cachedTokens || 0,

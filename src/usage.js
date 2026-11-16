@@ -46,16 +46,18 @@ export class UsageLedger {
   }
 
   record(event) {
+    if (event.clientKeyId == null) return;
     const clientKeyId = Number(event.clientKeyId);
+    const model = typeof event.model === 'string' ? event.model : '';
     const promptTokens = Number(event.promptTokens) || 0;
     const completionTokens = Number(event.completionTokens) || 0;
     const cachedTokens = Number(event.cachedTokens) || 0;
     const totalTokens = Number(event.totalTokens) || promptTokens + completionTokens;
-    if (!Number.isInteger(clientKeyId) || (!promptTokens && !completionTokens && !cachedTokens && !totalTokens)) return;
+    if (!Number.isInteger(clientKeyId) || (!model && !promptTokens && !completionTokens && !cachedTokens && !totalTokens)) return;
     try {
       this.worker?.postMessage({
         type: 'record',
-        event: { clientKeyId, promptTokens, completionTokens, cachedTokens, totalTokens },
+        event: { clientKeyId, model, promptTokens, completionTokens, cachedTokens, totalTokens },
       });
     } catch {}
   }
@@ -66,6 +68,10 @@ export class UsageLedger {
 
   flush() {
     return this.request('flush');
+  }
+
+  summary() {
+    return this.request('summary');
   }
 
   clear() {

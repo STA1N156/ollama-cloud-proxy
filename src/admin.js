@@ -177,6 +177,7 @@ export class AdminHandler {
       await this.quotaSync?.refresh(url.searchParams.get('refresh') === '1');
       return send(res, 200, {
         upstreamKeys: this.pool.snapshot().filter((key) => key.base_url === this.store.defaultUpstreamBaseUrl),
+        ...await this.usage.summary(),
       });
     }
     if (url.pathname === '/admin/api/cache') {

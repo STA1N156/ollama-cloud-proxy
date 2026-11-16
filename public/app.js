@@ -4,13 +4,13 @@ const num = (value) => new Intl.NumberFormat('zh-CN', { notation: Number(value) 
 const tokenM = (value) => `${((Number(value) || 0) / 1_000_000).toFixed(1)} M`;
 const exactTokens = (value) => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
-let state = { upstreamKeys: [], clientKeys: [], models: [], errorMessages: [], cache: {} };
+let state = { upstreamKeys: [], clientKeys: [], clientModelUsage: [], models: [], errorMessages: [], cache: {} };
 let currentPage = 'keys';
 let currentKeyTab = 'upstream';
 const pages = {
   keys: ['密钥管理', 'KEYS', '管理上游连接与客户端访问，独立配置每个密钥。'],
   models: ['模型目录', 'MODELS', '按通道浏览可用模型，发送一条消息检查连接。'],
-  usage: ['额度用量', 'USAGE', '查看 Ollama 账号的已用额度与模型调用，展开卡片查看明细。'],
+  usage: ['额度用量', 'USAGE', '按模型查找调用来源，查看下游密钥用量与上游账号额度。'],
   cache: ['缓存策略', 'CACHE', '选择本地前缀缓存或官方缓存，调整命中有效期。'],
   settings: ['设置', 'SETTINGS', '管理客户端看到的错误提示，随时恢复默认文案。'],
 };
@@ -113,7 +113,38 @@ function renderModels() {
   </section>`).join('') : '<div class="empty">还没有同步模型</div>';
 }
 
+function renderModelUsage() {
+  const container = $('#client-model-usage');
+  const opened = new Set([...container.querySelectorAll('details[open]')].map((item) => item.dataset.key));
+  const filter = $('#usage-model-filter');
+  const selected = filter.value;
+  const rows = state.clientModelUsage || [];
+  const models = [...new Set(rows.map((row) => row.model))].sort();
+  filter.innerHTML = '<option value="">全部模型</option>' + models.map((model) => `<option value="${esc(model)}">${esc(model)}</option>`).join('');
+  if (models.includes(selected)) filter.value = selected;
+  $('#model-usage-note').textContent = state.modelRecordedSince
+    ? `从 ${time(state.modelRecordedSince)} 起累计 · Token 单位 M · 可筛选 DeepSeek 查看来源`
+    : '从启用记录后累计，历史总用量不作模型拆分';
+  const groups = new Map();
+  for (const row of rows) {
+    if (filter.value && row.model !== filter.value) continue;
+    if (!groups.has(row.client_key_id)) groups.set(row.client_key_id, { ...row, calls: 0, tokens: 0, models: [] });
+    const group = groups.get(row.client_key_id);
+    group.calls += Number(row.requests);
+    group.tokens += Number(row.total_tokens);
+    group.models.push(row);
+  }
+  container.innerHTML = groups.size ? [...groups.values()].sort((a, b) => b.tokens - a.tokens || b.calls - a.calls).map((group) => `
+    <details class="usage-key" data-key="${group.client_key_id}" ${opened.has(String(group.client_key_id)) ? 'open' : ''}>
+      <summary><span><strong>${esc(group.label)}</strong><code>•••• ${esc(group.last4)}</code></span><span>${exactTokens(group.calls)} 次 · ${tokenM(group.tokens)}</span></summary>
+      <div class="table-wrap"><table><thead><tr><th>模型</th><th>调用次数</th><th>输入</th><th>输出</th><th>缓存</th><th>总 Token</th></tr></thead><tbody>
+      ${group.models.map((row) => `<tr><td>${esc(row.model)}</td><td>${exactTokens(row.requests)}</td>${['prompt_tokens', 'completion_tokens', 'cached_tokens', 'total_tokens'].map((key) => `<td title="${exactTokens(row[key])}">${tokenM(row[key])}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>
+    </details>`).join('') : '<div class="empty">暂无该模型的调用记录</div>';
+}
+
 function renderUsage() {
+  renderModelUsage();
   const percent = (value) => Math.min(100, Math.max(0, Number(value) * 100));
   const tone = (value) => value >= 90 ? 'bad' : value >= 70 ? 'warn' : '';
   const pace = (period) => {
@@ -220,7 +251,7 @@ $('#nav').addEventListener('click', (event) => {
   document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
   $(`#page-${currentPage}`).classList.remove('hidden');
   [$('#page-title').textContent, $('#page-category').textContent, $('#page-description').textContent] = pages[currentPage];
-  $('#clear-usage').classList.toggle('hidden', !['keys', 'models'].includes(currentPage));
+  $('#clear-usage').classList.toggle('hidden', !['keys', 'models', 'usage'].includes(currentPage));
   load(currentPage).catch(() => {});
 });
 
@@ -402,6 +433,7 @@ $('#clear-cache').addEventListener('click', async (event) => {
   finally { button.disabled = false; }
 });
 $('#refresh').addEventListener('click', () => load(currentPage, true));
+$('#usage-model-filter').addEventListener('change', renderModelUsage);
 $('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });
 $('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });
 $('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
