@@ -490,8 +490,8 @@ $('#error-settings-form').addEventListener('submit', async (event) => {
   finally { if (button) button.disabled = false; }
 });
 $('#reset-error-messages').addEventListener('click', async (event) => {
-  if (!(await ask('恢复默认提示？', '所有自定义错误提示都会被替换。', '恢复默认'))) return;
   const button = event.currentTarget;
+  if (!(await ask('恢复默认提示？', '所有自定义错误提示都会被替换。', '恢复默认'))) return;
   button.disabled = true;
   try {
     const result = await api('/admin/api/error-messages', { method: 'DELETE' });
@@ -502,8 +502,8 @@ $('#reset-error-messages').addEventListener('click', async (event) => {
   finally { button.disabled = false; }
 });
 $('#clear-usage').addEventListener('click', async (event) => {
-  if (!(await ask('清空统计？', '将清空累计调用和 Token 统计，密钥和缓存会保留。', '清空统计'))) return;
   const button = event.currentTarget;
+  if (!(await ask('清空统计？', '将清空累计调用和 Token 统计，密钥和缓存会保留。', '清空统计'))) return;
   button.disabled = true;
   try {
     await api('/admin/api/usage', { method: 'DELETE' });
@@ -524,8 +524,8 @@ $('#cache-settings-form').addEventListener('submit', async (event) => {
   finally { controls.forEach((item) => { item.disabled = false; }); }
 });
 $('#clear-cache').addEventListener('click', async (event) => {
-  if (!(await ask('清空本地缓存？', '只清空本地前缀账本，统计和上游缓存会保留。', '清空缓存'))) return;
   const button = event.currentTarget;
+  if (!(await ask('清空本地缓存？', '只清空本地前缀账本，统计和上游缓存会保留。', '清空缓存'))) return;
   button.disabled = true;
   try {
     await api('/admin/api/cache', { method: 'DELETE' });

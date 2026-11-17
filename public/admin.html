@@ -32,7 +32,8 @@
     <div class="brand login-brand"><span class="mark"><svg><use href="#i-brand"/></svg></span>Ollama Proxy</div>
     <form class="login-card" id="login-form">
       <h1 id="login-title">登录控制台</h1>
-      <label>管理密钥<input id="password" type="password" autocomplete="current-password" required autofocus></label>
+      <input type="text" name="username" autocomplete="username" value="admin" hidden>
+      <label>管理密钥<input id="password" name="password" type="password" autocomplete="current-password" required autofocus></label>
       <p class="form-error" id="login-error" role="alert"></p>
       <button class="primary" type="submit">登录</button>
     </form>
@@ -187,6 +188,6 @@
     <form method="dialog"><div class="dialog-head"><h3 id="confirm-title"></h3></div><div class="dialog-fields"><p id="confirm-text"></p></div><div class="dialog-actions"><button class="quiet" value="cancel" autofocus>取消</button><button class="danger filled" value="confirm" id="confirm-button">确定</button></div></form>
   </dialog>
   <div class="toast" id="toast" popover="manual" role="status" aria-live="polite"></div>
-  <script type="module" src="/admin/app.js?v=30"></script>
+  <script type="module" src="/admin/app.js?v=31"></script>
 </body>
 </html>
