@@ -3,132 +3,190 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cloud Proxy · 管理后台</title>
-  <link rel="stylesheet" href="/admin/style.css?v=22">
+  <meta name="color-scheme" content="light dark">
+  <title>Ollama Proxy 控制台</title>
+  <link rel="stylesheet" href="/admin/style.css?v=24">
 </head>
 <body>
-  <section class="login-shell" id="login-view">
+  <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-brand" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="4"/><path d="M7.5 9.5 10 12l-2.5 2.5m5.5 0h3.5"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01m4-9h4m-4 9h4"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.5" cy="15.5" r="4.5"/><path d="m12 12 7.5-7.5m-2 2 2 2m-4.5.5 2 2"/></symbol>
+    <symbol id="i-model" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h16M8 16v-5m5 5V7m5 9v-7"/></symbol>
+    <symbol id="i-cache" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 4 15 4 15 0V6m-15 6c0 4 15 4 15 0"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h5m6 0h5M4 17h9m6 0h1"/><circle cx="12" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5m4-12 4 4-4 4m-6-4h10"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24"><path d="M20.5 14.4A8.8 8.8 0 0 1 9.6 3.5a8.8 8.8 0 1 0 10.9 10.9Z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5m4.8-.8A8 8 0 0 0 6 6m-2 11v-5h5m-4.8.8A8 8 0 0 0 18 18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 4H6a2 2 0 0 0-2 2v10"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  </svg>
+
+  <section class="login-shell" id="login-view" aria-labelledby="login-title">
+    <div class="brand login-brand"><span class="mark"><svg><use href="#i-brand"/></svg></span>Ollama Proxy</div>
     <form class="login-card" id="login-form">
-      <div class="mark">CP</div>
-      <p class="eyebrow">CLOUD PROXY / CONSOLE</p>
-      <h1>管理控制台</h1>
-      <p class="muted">管理通道、访问密钥与模型额度。</p>
+      <h1 id="login-title">登录控制台</h1>
       <label>管理密钥<input id="password" type="password" autocomplete="current-password" required autofocus></label>
-      <button class="primary" type="submit">进入控制台</button>
       <p class="form-error" id="login-error" role="alert"></p>
-      <p class="login-note">管理密钥由环境变量 ADMIN_PASSWORD 设置</p>
+      <button class="primary" type="submit">登录</button>
     </form>
   </section>
 
   <div class="app hidden" id="app-view">
-    <aside class="sidebar">
-      <div class="brand"><span class="mark small">CP</span><span>Cloud Proxy<small>管理控制台</small></span></div>
-      <p class="nav-label">工作空间</p>
-      <nav id="nav" aria-label="主导航">
-        <button class="active" data-page="keys" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="4"/><path d="m11 11 9 9m-4-4 3-3m-6 0 3-3"/></svg><span>密钥管理</span></button>
-        <button data-page="models"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></svg><span>模型目录</span></button>
-        <button data-page="usage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M8 16v-5m5 5V7m5 9v-7"/></svg><span>额度用量</span></button>
-        <button data-page="cache"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/></svg><span>缓存策略</span></button>
-        <button data-page="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span>设置</span></button>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="mark"><svg><use href="#i-brand"/></svg></span>Ollama Proxy</div>
+      <nav id="nav" aria-label="控制台导航">
+        <button type="button" class="active" data-page="upstream" aria-current="page"><svg><use href="#i-server"/></svg>上游通道</button>
+        <button type="button" data-page="client"><svg><use href="#i-key"/></svg>下游密钥</button>
+        <button type="button" data-page="models"><svg><use href="#i-model"/></svg>模型目录</button>
+        <button type="button" data-page="usage"><svg><use href="#i-chart"/></svg>额度用量</button>
+        <button type="button" data-page="cache"><svg><use href="#i-cache"/></svg>缓存</button>
+        <button type="button" data-page="settings"><svg><use href="#i-settings"/></svg>设置</button>
       </nav>
-      <div class="sidebar-foot"><span class="live-dot"></span> 管理会话已连接<small>OpenAI 兼容 API 网关</small></div>
+      <div class="sidebar-foot">
+        <button class="quiet" type="button" id="theme"><svg><use href="#i-theme"/></svg><span>切换主题</span></button>
+        <button class="quiet" type="button" id="logout"><svg><use href="#i-logout"/></svg>退出登录</button>
+      </div>
     </aside>
 
     <div class="workspace">
-      <header>
-        <div><p class="eyebrow">WORKSPACE / <span id="page-category">KEYS</span></p><h2 id="page-title">密钥管理</h2><p class="page-description" id="page-description">管理上游连接与客户端访问，独立配置每个密钥。</p></div>
+      <header class="topbar">
+        <button class="icon-button mobile-menu" type="button" id="menu-toggle" aria-controls="sidebar" aria-expanded="false" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
+        <h2 id="page-title">上游通道</h2>
         <div class="header-actions">
-          <button class="quiet" id="refresh">刷新</button>
-          <button class="danger" id="clear-usage">清空统计</button>
-          <button class="quiet" id="logout">退出</button>
+          <button class="icon-button" type="button" id="refresh" title="刷新本页" aria-label="刷新本页"><svg><use href="#i-refresh"/></svg></button>
+          <button class="primary page-action" type="button" data-open="upstream-dialog"><svg><use href="#i-plus"/></svg>添加通道</button>
+          <button class="primary page-action hidden" type="button" data-open="client-dialog"><svg><use href="#i-plus"/></svg>生成密钥</button>
+          <button class="primary page-action hidden" type="button" id="sync-models"><svg><use href="#i-refresh"/></svg><span>同步模型</span></button>
         </div>
       </header>
 
-      <div class="notice warning hidden" id="password-warning">当前仍在使用默认管理密钥 123456，请在 Zeabur 环境变量中修改。</div>
-      <div class="notice warning hidden" id="key-warning">尚未创建下游访问密钥，API 会拒绝请求。</div>
-
       <main>
-        <section class="page" id="page-keys">
-          <div class="key-tabs" role="group" aria-label="密钥类型">
-            <button class="active" data-key-tab="upstream" aria-pressed="true">上游通道 <span id="upstream-count">0</span></button>
-            <button data-key-tab="client" aria-pressed="false">下游密钥 <span id="client-count">0</span></button>
+        <div class="notice warning hidden" id="password-warning">正在使用默认管理密钥，请通过环境变量 <code>ADMIN_PASSWORD</code> 修改。</div>
+        <section class="page" id="page-upstream" aria-labelledby="page-title">
+          <div class="list-toolbar"><span id="upstream-count">0 个通道</span>
+            <label class="search"><svg><use href="#i-search"/></svg><input id="upstream-filter" type="search" placeholder="查找通道" aria-label="按通道名称或地址查找"></label>
           </div>
-          <div class="panel" id="key-upstream-panel">
-            <div class="panel-head"><div><h3>上游 API 通道</h3><p>连接 Ollama Cloud 或其他 OpenAI 兼容 API</p></div><span class="section-note">Ollama 测试 · DeepSeek V4.1 Flash</span></div>
-            <details class="create-section">
-              <summary>添加上游通道<span>支持外部 API</span></summary>
-              <form class="inline-form upstream-form" id="upstream-form">
-                <label>通道名称<input name="label" placeholder="例如主账号或备用 API" required></label>
-                <label>API 地址<input name="baseUrl" type="url" value="https://ollama.com/v1" placeholder="https://example.com/v1" required></label>
-                <label>API 密钥<input name="key" type="password" autocomplete="off" placeholder="输入上游密钥" required></label>
-                <label>Ollama 等级<select name="tier"><option value="max">MAX · 8 并发</option><option value="pro">PRO · 2 并发</option></select></label>
-                <button class="primary">导入通道</button>
-                <p class="form-hint">MAX / PRO 仅影响 Ollama。外部通道不受此并发限制，模型会在导入后自动同步。</p>
-              </form>
-            </details>
-            <div class="table-wrap" tabindex="0" aria-label="上游通道列表"><table><thead><tr><th>通道 / API 地址</th><th>密钥</th><th>等级</th><th>缓存方式</th><th>状态</th><th>当前 / 上限</th><th class="actions-heading">操作</th></tr></thead><tbody id="upstream-body"></tbody></table></div>
-          </div>
-          <div class="panel hidden" id="key-client-panel">
-            <div class="panel-head"><div><h3>下游访问密钥</h3><p>提供给客户端使用，每个密钥可独立设置减速与白名单</p></div><span class="section-note">用量单位 · M token</span></div>
-            <details class="create-section">
-              <summary>生成访问密钥<span>独立访问控制</span></summary>
-              <form class="inline-form client-form" id="client-form">
-                <label>密钥名称<input name="label" placeholder="客户或应用名称" required></label>
-                <label>输出速度 · token/s<input name="outputTps" type="number" min="0" max="1000" value="0"></label>
-                <label>访问控制<select name="allowedOrigin"><option value="">不启用白名单（默认）</option><option value="https://sta1n156.github.io">白名单</option><option value="limit:3">白名单 + 3 并发</option><option value="limit:5">白名单 + 5 并发</option><option value="limit:10">白名单 + 10 并发</option><option value="limit:15">白名单 + 15 并发</option><option value="limit:20">白名单 + 20 并发</option><option value="limit:25">白名单 + 25 并发</option><option value="limit:30">白名单 + 30 并发</option><option value="limit:35">白名单 + 35 并发</option><option value="limit:40">白名单 + 40 并发</option><option value="limit:120">白名单 + 120 并发</option></select></label>
-                <button class="primary">生成密钥</button>
-                <p class="form-hint">输出速度设为 0 时直接透传；白名单并发模式会立即拒绝超出上限的请求。</p>
-              </form>
-            </details>
-            <div class="table-wrap" tabindex="0" aria-label="下游密钥列表"><table><thead><tr><th>名称 / 密钥</th><th>总用量</th><th>Token 减速器</th><th>访问控制</th><th>当前并发</th><th class="actions-heading">操作</th></tr></thead><tbody id="client-body"></tbody></table></div>
+          <div class="table-wrap" tabindex="0" aria-label="上游通道列表">
+            <table class="key-table"><thead><tr><th scope="col">通道</th><th scope="col">等级</th><th scope="col">缓存</th><th scope="col">状态</th><th scope="col">并发 / 上限</th><th scope="col" class="actions-heading">操作</th></tr></thead><tbody id="upstream-body"></tbody></table>
           </div>
         </section>
 
-        <section class="page hidden" id="page-models">
-          <div class="panel">
-            <div class="panel-head"><div><h3>全部上游模型</h3><p id="model-meta">按 API 通道自动同步并分组</p></div><button class="primary" id="sync-models">立即同步</button></div>
-            <div class="model-groups" id="model-grid"></div>
+        <section class="page hidden" id="page-client" aria-labelledby="page-title">
+          <div class="notice warning hidden" id="key-warning">没有启用的下游密钥，客户端请求会被拒绝。</div>
+          <div class="list-toolbar"><span id="client-count">0 个密钥</span>
+            <label class="search"><svg><use href="#i-search"/></svg><input id="client-filter" type="search" placeholder="查找密钥" aria-label="按密钥名称或尾号查找"></label>
+          </div>
+          <div class="table-wrap" tabindex="0" aria-label="下游密钥列表">
+            <table class="key-table"><thead><tr><th scope="col">密钥</th><th scope="col">总用量</th><th scope="col">输出速度</th><th scope="col">访问控制</th><th scope="col">当前并发</th><th scope="col" class="actions-heading">操作</th></tr></thead><tbody id="client-body"></tbody></table>
           </div>
         </section>
 
-        <section class="page hidden" id="page-usage">
-          <div class="panel">
-            <div class="panel-head"><div><h3>模型调用来源</h3><p id="model-usage-note">按下游密钥汇总，从启用记录后累计</p></div><select id="usage-model-filter" aria-label="筛选统计模型"><option value="">全部模型</option></select></div>
-            <div id="client-model-usage"></div>
-          </div>
-          <div class="quota-grid" id="quota-grid"></div>
+        <section class="page hidden" id="page-models" aria-labelledby="page-title">
+          <div class="list-toolbar"><span id="model-meta" aria-live="polite">正在读取模型</span></div>
+          <div class="model-groups" id="model-grid"></div>
         </section>
 
-        <section class="page hidden" id="page-cache">
-          <form class="panel cache-settings" id="cache-settings-form">
-            <div class="panel-head"><div><h3>基础前缀缓存</h3><p>相同内容与连续对话前缀命中，不使用 RP 分块</p></div><span class="badge" id="cache-status">读取中</span></div>
-            <div class="cache-fields">
-              <label class="cache-option"><span><strong>使用本地缓存</strong><small>开启：用本地命中覆盖缓存 token。关闭：直接透传上游官方 usage。</small></span><input id="cache-enabled" type="checkbox" role="switch" aria-label="使用本地缓存"></label>
-              <label class="cache-option"><span><strong>缓存有效期</strong><small>默认 10 分钟，可设置 1 分钟到 7 天。</small></span><span class="cache-duration"><input id="cache-ttl" type="number" min="1" max="10080" step="1" value="10" required aria-label="缓存有效期（分钟）"><span>分钟</span></span></label>
-              <label class="cache-option"><span><strong>最大缓存命中率</strong><small>默认 99.8%；0 不回报本地命中，100 允许全量命中。</small></span><span class="cache-duration"><input id="cache-max-hit" type="number" min="0" max="100" step="0.1" value="99.8" required aria-label="最大缓存命中率（百分比）"><span>%</span></span></label>
-              <p class="cache-help">总开关开启后，Ollama 使用本地缓存；第三方通道需在密钥页选择“本地覆盖”才会生效。修改时长只影响新写入或再次命中的缓存，已有数据按原时间过期。</p>
-            </div>
-            <div class="settings-actions"><span>保存后新请求立即生效，进行中的请求保持原方式</span><button class="primary" type="submit">保存设置</button></div>
-          </form>
-          <div class="panel cache-storage">
-            <div class="panel-head"><div><h3>缓存账本</h3><p>只保存内容摘要，不保存对话原文；模拟命中不会减少上游实际用量。</p></div><button class="danger" id="clear-cache">清空缓存</button></div>
-            <div class="cache-metrics"><div><span>有效前缀</span><strong id="cache-entries">—</strong></div><div><span>索引占用</span><strong id="cache-size">—</strong></div><div><span>空间上限</span><strong>512 MB</strong></div></div>
+        <section class="page hidden" id="page-usage" aria-labelledby="page-title">
+          <div class="section-tabs" role="group" aria-label="用量视图">
+            <button type="button" class="active" data-usage-view="calls" aria-pressed="true">调用来源</button>
+            <button type="button" data-usage-view="quota" aria-pressed="false">Ollama 额度</button>
+          </div>
+          <div id="usage-calls">
+            <div class="list-toolbar"><span id="model-usage-note">正在读取用量</span><select id="usage-model-filter" aria-label="筛选模型"><option value="">全部模型</option></select></div>
+            <div id="client-model-usage" class="usage-keys"></div>
+            <div class="footer-actions"><button class="danger" type="button" id="clear-usage">清空统计</button></div>
+          </div>
+          <div id="usage-quota" class="hidden">
+            <div class="quota-grid" id="quota-grid"></div>
           </div>
         </section>
 
-        <section class="page hidden" id="page-settings">
+        <section class="page hidden" id="page-cache" aria-labelledby="page-title">
+          <div class="settings-layout">
+            <form class="panel" id="cache-settings-form">
+              <div class="panel-head"><h3>缓存策略</h3><span class="badge" id="cache-status">读取中</span></div>
+              <label class="setting-row"><span><strong>本地前缀缓存</strong><small>关闭时透传上游缓存数据。第三方通道需单独启用本地覆盖。</small></span><input id="cache-enabled" type="checkbox" role="switch"></label>
+              <label class="setting-row"><span><strong>有效期</strong><small>只影响新写入或再次命中的前缀。</small></span><span class="input-unit"><input id="cache-ttl" type="number" min="1" max="10080" step="1" value="10" required><span>分钟</span></span></label>
+              <label class="setting-row"><span><strong>最大命中率</strong><small>限制本地回报的缓存 token 比例。</small></span><span class="input-unit"><input id="cache-max-hit" type="number" min="0" max="100" step="0.1" value="99.8" required><span>%</span></span></label>
+              <div class="panel-actions"><button class="primary" type="submit">保存设置</button></div>
+            </form>
+            <section class="panel storage">
+              <div class="panel-head"><h3>本地账本</h3></div>
+              <dl class="storage-list"><div><dt>有效前缀</dt><dd id="cache-entries">—</dd></div><div><dt>索引占用</dt><dd><span id="cache-size">—</span><span class="muted"> / 512 MB</span></dd></div></dl>
+              <p class="storage-note">只保存内容摘要。本地命中不会减少上游实际用量。</p>
+              <div class="panel-actions"><button class="danger" type="button" id="clear-cache">清空缓存</button></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page hidden" id="page-settings" aria-labelledby="page-title">
           <form class="panel error-settings" id="error-settings-form">
-            <div class="panel-head"><div><h3>错误提示</h3><p>修改代理主动返回给下游用户的固定文案，上游原始错误仍会直接透传</p></div><button class="danger" type="button" id="reset-error-messages">恢复默认</button></div>
-            <div class="error-settings-grid" id="error-settings-list"></div>
-            <div class="settings-actions"><span>修改后立即生效，无需重启服务</span><button class="primary" type="submit">保存修改</button></div>
+            <div class="panel-head"><div><h3>错误提示</h3><p>编辑代理主动返回的文案，原始上游错误照常透传。</p></div></div>
+            <div id="error-settings-list"></div>
+            <div class="panel-actions split"><button class="quiet" type="button" id="reset-error-messages">恢复默认</button><button class="primary" type="submit">保存修改</button></div>
           </form>
         </section>
       </main>
     </div>
   </div>
 
-  <dialog id="token-dialog" aria-labelledby="token-title"><div class="dialog-card"><p class="eyebrow">NEW CLIENT KEY</p><h3 id="token-title">访问密钥已生成</h3><p class="muted">复制到客户端即可使用。以后也可在密钥列表中复制，请勿公开分享。</p><div class="token-box"><code id="new-token"></code><button id="copy-token">复制</button></div><button class="primary full" id="close-dialog">完成</button></div></dialog>
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/admin/app.js?v=29"></script>
+  <dialog class="drawer" id="upstream-dialog" aria-labelledby="upstream-title">
+    <form class="dialog-layout" id="upstream-form">
+      <div class="dialog-head"><h3 id="upstream-title">添加通道</h3><button class="icon-button" type="button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-fields">
+        <label>通道名称<input name="label" placeholder="例如主账号或备用 API" required></label>
+        <label>API 地址<input name="baseUrl" type="url" value="https://ollama.com/v1" placeholder="https://example.com/v1" required></label>
+        <label>API 密钥<input name="key" type="password" autocomplete="off" required></label>
+        <label>Ollama 等级<select name="tier"><option value="max">MAX · 8 并发</option><option value="pro">PRO · 2 并发</option></select><small>外部 API 不受此限制。</small></label>
+      </div>
+      <div class="dialog-actions"><button class="quiet" type="button" data-close>取消</button><button class="primary" type="submit">添加通道</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="drawer" id="client-dialog" aria-labelledby="client-title">
+    <form class="dialog-layout" id="client-form">
+      <div class="dialog-head"><h3 id="client-title">生成密钥</h3><button class="icon-button" type="button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-fields">
+        <label>密钥名称<input name="label" placeholder="客户或应用名称" required></label>
+        <label>输出速度（token/s）<input name="outputTps" type="number" min="0" max="1000" value="0"><small>设为 0 时直接透传流式输出。</small></label>
+        <label>访问控制<select name="allowedOrigin"></select></label>
+      </div>
+      <div class="dialog-actions"><button class="quiet" type="button" data-close>取消</button><button class="primary" type="submit">生成密钥</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="drawer" id="key-dialog" aria-labelledby="key-dialog-title">
+    <form class="dialog-layout" id="key-edit-form">
+      <div class="dialog-head"><h3 id="key-dialog-title">密钥设置</h3><button class="icon-button" type="button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+      <div class="dialog-fields">
+        <div class="key-profile"><strong id="edit-key-name"></strong><code id="edit-key-meta"></code></div>
+        <label class="switch-row"><span>启用密钥</span><input name="enabled" type="checkbox" role="switch"></label>
+        <label data-edit-field>Ollama 等级<select name="tier"><option value="max">MAX · 8 并发</option><option value="pro">PRO · 2 并发</option></select></label>
+        <label class="switch-row" data-edit-field><span>本地缓存覆盖<small>本地缓存总开关开启时生效。</small></span><input name="useProxyCache" type="checkbox" role="switch"></label>
+        <label data-edit-field>输出速度（token/s）<input name="outputTps" type="number" min="0" max="1000" required><small>设为 0 时直接透传流式输出。</small></label>
+        <label data-edit-field>访问控制<select name="allowedOrigin"></select></label>
+      </div>
+      <div class="dialog-actions split"><button class="danger" type="button" id="delete-key">删除密钥</button><button class="primary" type="submit">保存设置</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="token-dialog" aria-labelledby="token-title">
+    <div class="dialog-head"><h3 id="token-title">访问密钥已生成</h3><button class="icon-button" type="button" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button></div>
+    <div class="dialog-fields"><p>将密钥复制到客户端，请勿公开分享。</p><div class="token-box"><code id="new-token"></code><button class="quiet" type="button" id="copy-token"><svg><use href="#i-copy"/></svg>复制</button></div></div>
+    <div class="dialog-actions"><button class="primary" type="button" data-close>完成</button></div>
+  </dialog>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+    <form method="dialog"><div class="dialog-head"><h3 id="confirm-title"></h3></div><div class="dialog-fields"><p id="confirm-text"></p></div><div class="dialog-actions"><button class="quiet" value="cancel" autofocus>取消</button><button class="danger filled" value="confirm" id="confirm-button">确定</button></div></form>
+  </dialog>
+  <div class="toast" id="toast" popover="manual" role="status" aria-live="polite"></div>
+  <script type="module" src="/admin/app.js?v=30"></script>
 </body>
 </html>

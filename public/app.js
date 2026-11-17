@@ -1,27 +1,28 @@
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
-const num = (value) => new Intl.NumberFormat('zh-CN', { notation: Number(value) >= 1_000_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(Number(value) || 0);
+const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const empty = (text) => `<div class="empty">${text}</div>`;
+const grouped = (value) => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
 const tokenM = (value) => `${((Number(value) || 0) / 1_000_000).toFixed(1)} M`;
-const exactTokens = (value) => new Intl.NumberFormat('zh-CN').format(Number(value) || 0);
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
-let state = { upstreamKeys: [], clientKeys: [], clientModelUsage: [], models: [], errorMessages: [], cache: {} };
-let currentPage = 'keys';
-let currentKeyTab = 'upstream';
-const pages = {
-  keys: ['密钥管理', 'KEYS', '管理上游连接与客户端访问，独立配置每个密钥。'],
-  models: ['模型目录', 'MODELS', '按通道浏览可用模型，发送一条消息检查连接。'],
-  usage: ['额度用量', 'USAGE', '按模型查找调用来源，查看下游密钥用量与上游账号额度。'],
-  cache: ['缓存策略', 'CACHE', '选择本地前缀缓存或官方缓存，调整命中有效期。'],
-  settings: ['设置', 'SETTINGS', '管理客户端看到的错误提示，随时恢复默认文案。'],
-};
+const whitelist = 'https://sta1n156.github.io';
+const accessOptions = '<option value="">不限制来源</option><option value="' + whitelist + '">白名单</option>'
+  + [3, 5, 10, 15, 20, 25, 30, 35, 40, 120].map((limit) => `<option value="limit:${limit}">白名单 + ${limit} 并发</option>`).join('');
+for (const field of document.querySelectorAll('select[name="allowedOrigin"]')) field.innerHTML = accessOptions;
+
+const state = { upstreamKeys: [], clientKeys: [], quotaKeys: [], clientModelUsage: [], models: [], errorMessages: [], cache: {} };
+const pages = { upstream: '上游通道', client: '下游密钥', models: '模型目录', usage: '额度用量', cache: '缓存', settings: '设置' };
+const keyPage = (page) => page === 'upstream' || page === 'client';
+const resource = (page) => keyPage(page) ? 'keys' : page;
 const loading = new Map();
+let currentPage = 'upstream';
 
 function toast(message) {
   const el = $('#toast');
   el.textContent = message;
-  el.classList.add('show');
+  if (!el.matches(':popover-open')) el.showPopover();
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove('show'), 2200);
+  toast.timer = setTimeout(() => el.hidePopover(), 3000);
 }
 
 async function api(path, options = {}) {
@@ -36,6 +37,8 @@ async function api(path, options = {}) {
 }
 
 function showLogin() {
+  document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
+  setMenu(false);
   $('#app-view').classList.add('hidden');
   $('#login-view').classList.remove('hidden');
 }
@@ -54,38 +57,57 @@ function badge(status) {
   return `<span class="badge ${item[1]}">${esc(item[0])}</span>`;
 }
 
-function renderKeys() {
-  $('#upstream-count').textContent = state.upstreamKeys.length;
-  $('#client-count').textContent = state.clientKeys.length;
-  $('#upstream-body').innerHTML = state.upstreamKeys.length ? state.upstreamKeys.map((key) => `<tr>
-    <td class="identity-cell"><strong title="${esc(key.label)}">${esc(key.label)}</strong><code title="${esc(key.base_url)}">${esc(key.base_url)}</code></td><td><code>•••• ${esc(key.last4)}</code></td>
-    <td>${key.tierConfigurable ? `<select class="tier-select" data-upstream-tier data-id="${key.id}" aria-label="${esc(key.label)} 等级"><option value="max" ${key.tier === 'max' ? 'selected' : ''}>MAX · 8</option><option value="pro" ${key.tier === 'pro' ? 'selected' : ''}>PRO · 2</option></select>` : '<span class="badge">外部 API</span>'}</td>
-    <td>${key.proxyCacheConfigurable ? `<button class="cache-toggle ${key.use_proxy_cache ? 'enabled' : ''}" data-action="toggle-upstream-cache" data-id="${key.id}" data-enabled="${!key.use_proxy_cache}" title="${key.use_proxy_cache && !key.proxyCacheEnabled ? '本地缓存总开关已关闭，当前透传上游缓存' : '本地缓存总开关开启时生效'}">${key.use_proxy_cache ? '本地覆盖' : '上游透传'}</button>` : `<span class="badge ${key.proxyCacheEnabled ? 'good' : ''}">${key.proxyCacheEnabled ? '本地缓存' : '官方缓存'}</span>`}</td><td>${badge(key.status)}</td><td class="load-cell">${key.inFlight} <span>/ ${key.concurrencyLimit == null ? '不限' : key.concurrencyLimit}</span>${key.enabled ? '' : ' · 暂停'}</td>
-    <td><div class="row-actions"><button data-action="test-upstream" data-id="${key.id}">测试</button><button data-action="toggle-upstream" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button class="delete-action" data-action="delete-upstream" data-id="${key.id}">删除</button></div></td>
-  </tr>`).join('') : '<tr><td class="empty" colspan="7">暂无上游通道。点击上方“添加上游通道”开始连接。</td></tr>';
-
-  $('#client-body').innerHTML = state.clientKeys.length ? state.clientKeys.map((key) => `<tr>
-    <td class="identity-cell"><strong title="${esc(key.label)}">${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></td><td class="token-cell" title="输入 ${num(key.prompt_tokens)} / 输出 ${num(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
-    <td><div class="rate-control" title="流式文字按字符平滑输出，10 约为每 0.1 秒一个字；0 直接透传"><input data-client-rate type="number" min="0" max="1000" value="${Number(key.output_tps) || 0}" aria-label="${esc(key.label)} 输出 token 每秒"><span>token/s</span><button data-action="save-client-rate" data-id="${key.id}">保存</button></div></td>
-    <td><div class="origin-control"><select data-client-origin aria-label="${esc(key.label)} 访问控制"><option value="" ${key.allowed_origin ? '' : 'selected'}>未启用</option><option value="https://sta1n156.github.io" ${key.allowed_origin && !key.concurrency_limit ? 'selected' : ''}>白名单</option>${[3, 5, 10, 15, 20, 25, 30, 35, 40, 120].map((limit) => `<option value="limit:${limit}" ${key.concurrency_limit === limit ? 'selected' : ''}>白名单 + ${limit} 并发</option>`).join('')}</select><button data-action="save-client-origin" data-id="${key.id}">保存</button></div></td>
-    <td><span class="badge ${key.enabled ? 'good' : 'warn'}" data-client-load="${key.id}" data-enabled="${Boolean(key.enabled)}">${key.enabled ? `${Number(key.in_flight) || 0} 并发` : `暂停 · ${Number(key.in_flight) || 0} 并发`}</span></td>
-    <td><div class="row-actions"><button data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>复制</button><button data-action="toggle-client" data-id="${key.id}" data-enabled="${!key.enabled}">${key.enabled ? '暂停' : '启用'}</button><button class="delete-action" data-action="delete-client" data-id="${key.id}">删除</button></div></td>
-  </tr>`).join('') : '<tr><td class="empty" colspan="6">暂无访问密钥。点击上方“生成访问密钥”供客户端使用。</td></tr>';
-
+function renderKeys(type) {
+  const upstream = type === 'upstream';
+  const keys = upstream ? state.upstreamKeys : state.clientKeys;
+  const query = $(`#${type}-filter`).value.trim().toLowerCase();
+  const matches = keys.filter((key) => !query || [key.label, key.last4, upstream && key.base_url].some((value) => value && String(value).toLowerCase().includes(query)));
+  $(`#${type}-count`).textContent = `${query ? `${matches.length} / ` : ''}${keys.length} ${upstream ? '个通道' : '个密钥'}`;
+  $(`#${type}-body`).innerHTML = matches.length ? matches.map(upstream ? upstreamRow : clientRow).join('') :
+    `<tr><td colspan="6">${empty(query ? '没有匹配的结果' : upstream ? '还没有通道，可以先添加一个上游 API。' : '还没有下游密钥。')}</td></tr>`;
   $('#key-warning').classList.toggle('hidden', state.allowAnonymous || state.clientKeys.some((key) => key.enabled));
   $('#password-warning').classList.toggle('hidden', !state.defaultPassword);
+}
+
+function manageButton(type, key) {
+  return `<button class="icon-button" type="button" title="设置" aria-label="设置 ${esc(key.label)}" data-action="edit-${type}" data-id="${key.id}">${icon('settings')}</button>`;
+}
+
+function upstreamRow(key) {
+  const cache = key.proxyCacheEnabled ? '本地缓存' : key.proxyCacheConfigurable ? '上游透传' : '官方缓存';
+  return `<tr>
+    <td class="identity-cell"><strong title="${esc(key.label)}">${esc(key.label)}</strong><span class="identity-detail"><code title="${esc(key.base_url)}">${esc(key.base_url)}</code><code>•••• ${esc(key.last4)}</code></span></td>
+    <td data-label="等级">${key.tierConfigurable ? esc(String(key.tier).toUpperCase()) : '外部 API'}</td>
+    <td data-label="缓存">${cache}</td>
+    <td data-label="状态">${badge(key.enabled ? key.status : 'paused')}</td>
+    <td class="numeric" data-label="并发 / 上限">${key.inFlight} <span class="muted">/ ${key.concurrencyLimit ?? '不限'}</span></td>
+    <td class="row-end"><div class="row-actions"><button class="quiet" type="button" data-action="test-upstream" data-id="${key.id}">${icon('play')}<span>测试</span></button>${manageButton('upstream', key)}</div></td>
+  </tr>`;
+}
+
+const clientLoadLabel = (count, enabled) => `${enabled ? '' : '暂停 · '}${Number(count) || 0}`;
+
+function clientRow(key) {
+  const access = key.concurrency_limit ? `白名单 + ${key.concurrency_limit} 并发` : key.allowed_origin ? '白名单' : '不限制来源';
+  return `<tr>
+    <td class="identity-cell"><strong title="${esc(key.label)}">${esc(key.label)}</strong><code>•••• ${esc(key.last4)}</code></td>
+    <td class="numeric" data-label="总用量" title="输入 ${grouped(key.prompt_tokens)} / 输出 ${grouped(key.completion_tokens)}">${tokenM(key.total_tokens)}</td>
+    <td data-label="输出速度">${key.output_tps ? `${Number(key.output_tps)} token/s` : '不限速'}</td>
+    <td data-label="访问控制">${access}</td>
+    <td data-label="当前并发"><span class="badge ${key.enabled ? 'good' : 'warn'}" data-client-load="${key.id}" data-enabled="${Boolean(key.enabled)}">${clientLoadLabel(key.in_flight, key.enabled)}</span></td>
+    <td class="row-end"><div class="row-actions"><button class="quiet" type="button" data-action="copy-client" data-id="${key.id}" ${key.copyable ? '' : 'disabled title="旧版密钥无法恢复，请重新生成"'}>${icon('copy')}<span>复制</span></button>${manageButton('client', key)}</div></td>
+  </tr>`;
 }
 
 function renderModelMeta() {
   const latest = state.models.reduce((max, model) => Math.max(max, model.synced_at || 0), 0);
   const modelCount = new Set(state.models.map((model) => model.model || model.name)).size;
   const sourceCount = new Set(state.models.map((model) => model.source_url)).size;
-  $('#model-meta').textContent = state.modelSyncError ? `部分同步失败：${state.modelSyncError}` : `${modelCount} 个模型记录 · ${sourceCount} 个 API 通道 · ${latest ? `同步于 ${time(latest)}` : '尚未同步'}`;
+  $('#model-meta').textContent = state.modelSyncError ? `部分同步失败：${state.modelSyncError}` : `${modelCount} 个模型 · ${sourceCount} 个 API 通道${latest ? ` · ${time(latest)} 更新` : ''}`;
 }
 
 function render(page = currentPage) {
-  if (page === 'keys') renderKeys();
-  else if (page === 'models') { renderModels(); renderModelMeta(); }
+  if (page === 'models') { renderModels(); renderModelMeta(); }
   else if (page === 'usage') renderUsage();
   else if (page === 'cache') renderCache();
   else if (page === 'settings') renderSettings();
@@ -93,24 +115,26 @@ function render(page = currentPage) {
 
 function renderCache() {
   $('#cache-enabled').checked = Boolean(state.cache.enabled);
-  $('#cache-ttl').value = state.cache.ttlMs / 60_000;
+  $('#cache-ttl').value = (state.cache.ttlMs ?? 600_000) / 60_000;
   $('#cache-max-hit').value = state.cache.maxHitPercent ?? 99.8;
-  $('#cache-status').textContent = state.cache.enabled ? '本地缓存已开启' : '使用官方缓存';
+  $('#cache-status').textContent = state.cache.enabled ? '本地缓存' : '上游透传';
   $('#cache-status').className = `badge ${state.cache.enabled ? 'good' : ''}`;
-  $('#cache-entries').textContent = exactTokens(state.cache.entries);
+  $('#cache-entries').textContent = grouped(state.cache.entries);
   $('#cache-size').textContent = `${((Number(state.cache.indexedBytes) || 0) / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function renderModels() {
+  const container = $('#model-grid');
+  const closed = new Set([...container.querySelectorAll('details:not([open])')].map((item) => item.dataset.source));
   const groups = new Map();
   for (const model of state.models) {
     if (!groups.has(model.source_url)) groups.set(model.source_url, []);
     groups.get(model.source_url).push(model);
   }
-  $('#model-grid').innerHTML = groups.size ? [...groups].map(([source, models]) => `<section class="model-group">
-    <div class="model-group-head"><div><strong>${esc(models[0].source_label)}</strong><code title="${esc(source)}">${esc(source)}</code></div><span>${models.length} 个模型 · ${models[0].key_count} 个可用密钥</span></div>
-    <div class="model-grid">${models.map((item) => `<div class="model-item"><div class="model-item-head"><strong title="${esc(item.name)}">${esc(item.name)}</strong><button data-action="test-model" data-model="${esc(item.name)}" data-source-url="${esc(item.source_url)}">测试</button></div><span>${esc(item.details?.family || item.details?.owner || 'OpenAI 兼容')} · ${item.modified_at ? new Date(item.modified_at).toLocaleDateString('zh-CN') : '自动同步'}</span></div>`).join('')}</div>
-  </section>`).join('') : '<div class="empty">还没有同步模型</div>';
+  container.innerHTML = groups.size ? [...groups].map(([source, models]) => `<details class="model-group" data-source="${esc(source)}" ${closed.has(source) ? '' : 'open'}>
+    <summary class="group-head">${icon('chevron')}<span class="identity-cell"><strong>${esc(models[0].source_label)}</strong><code title="${esc(source)}">${esc(source)}</code></span><span class="group-count">${models.length} 个模型 · ${models[0].key_count} 个可用密钥</span></summary>
+    <ul class="model-list">${models.map((item) => `<li><span class="model-icon">${icon('model')}</span><span class="model-name"><strong>${esc(item.name)}</strong><span>${esc(item.details?.family || item.details?.owner || 'OpenAI 兼容')}${item.modified_at ? ` · ${new Date(item.modified_at).toLocaleDateString('zh-CN')}` : ''}</span></span><button class="quiet" type="button" data-action="test-model" data-model="${esc(item.name)}" data-source-url="${esc(item.source_url)}">${icon('play')}<span>测试</span></button></li>`).join('')}</ul>
+  </details>`).join('') : empty('暂无模型。添加上游通道后可同步。');
 }
 
 function renderModelUsage() {
@@ -123,8 +147,8 @@ function renderModelUsage() {
   filter.innerHTML = '<option value="">全部模型</option>' + models.map((model) => `<option value="${esc(model)}">${esc(model)}</option>`).join('');
   if (models.includes(selected)) filter.value = selected;
   $('#model-usage-note').textContent = state.modelRecordedSince
-    ? `从 ${time(state.modelRecordedSince)} 起累计 · Token 单位 M · 可筛选 DeepSeek 查看来源`
-    : '从启用记录后累计，历史总用量不作模型拆分';
+    ? `记录始于 ${time(state.modelRecordedSince)}`
+    : '从启用记录时起累计';
   const groups = new Map();
   for (const row of rows) {
     if (filter.value && row.model !== filter.value) continue;
@@ -136,9 +160,9 @@ function renderModelUsage() {
   }
   container.innerHTML = groups.size ? [...groups.values()].sort((a, b) => b.tokens - a.tokens || b.calls - a.calls).map((group) => `
     <details class="usage-key" data-key="${group.client_key_id}" ${opened.has(String(group.client_key_id)) ? 'open' : ''}>
-      <summary><span><strong>${esc(group.label)}</strong><code>•••• ${esc(group.last4)}</code></span><span>${exactTokens(group.calls)} 次 · ${tokenM(group.tokens)}</span></summary>
-      <div class="table-wrap"><table><thead><tr><th>模型</th><th>调用次数</th><th>输入</th><th>输出</th><th>缓存</th><th>总 Token</th></tr></thead><tbody>
-      ${group.models.map((row) => `<tr><td>${esc(row.model)}</td><td>${exactTokens(row.requests)}</td>${['prompt_tokens', 'completion_tokens', 'cached_tokens', 'total_tokens'].map((key) => `<td title="${exactTokens(row[key])}">${tokenM(row[key])}</td>`).join('')}</tr>`).join('')}
+      <summary class="group-head">${icon('chevron')}<span class="identity-cell"><strong>${esc(group.label)}</strong><code>•••• ${esc(group.last4)}</code></span><span class="group-count">${grouped(group.calls)} 次 · ${tokenM(group.tokens)} token</span></summary>
+      <div class="table-wrap" tabindex="0" aria-label="模型用量"><table><thead><tr><th>模型</th><th>调用次数</th><th>输入</th><th>输出</th><th>缓存</th><th>总 Token</th></tr></thead><tbody>
+      ${group.models.map((row) => `<tr><td>${esc(row.model)}</td><td>${grouped(row.requests)}</td>${['prompt_tokens', 'completion_tokens', 'cached_tokens', 'total_tokens'].map((key) => `<td title="${grouped(row[key])}">${tokenM(row[key])}</td>`).join('')}</tr>`).join('')}
       </tbody></table></div>
     </details>`).join('') : '<div class="empty">暂无该模型的调用记录</div>';
 }
@@ -178,7 +202,7 @@ function renderUsage() {
       <progress class="quota-progress ${tone(used)}" max="100" value="${used}" aria-label="${label}已用 ${used.toFixed(1)}%"></progress>
       <div class="quota-meter-note"><span class="quota-pace ${status.tone}" title="${esc(status.detail || '')}">${esc(status.text)}</span><span title="${esc(resetTitle)}">${esc(resetText)}</span></div></div>`;
   };
-  const keys = state.upstreamKeys || [];
+  const keys = state.quotaKeys || [];
   $('#quota-grid').innerHTML = keys.length ? keys.map((key) => {
     const quota = key.quota;
     const error = key.quotaError ? `<div class="quota-error">${esc(key.quotaError)}</div>` : '';
@@ -197,182 +221,260 @@ function renderUsage() {
 
 function renderSettings() {
   $('#error-settings-list').innerHTML = state.errorMessages.map((item) => `<label class="error-setting">
-    <span class="error-setting-head"><strong>${esc(item.label)}</strong><code>HTTP ${item.status}</code></span>
-    <textarea name="${esc(item.key)}" maxlength="500" rows="3" required>${esc(item.value)}</textarea>
-    <small>${item.key === 'model_not_found' ? '可使用 <code>{model}</code> 显示实际模型名' : `系统键：${esc(item.key)}`}</small>
+    <span><strong>${esc(item.label)}</strong><code class="badge">HTTP ${esc(item.status)}</code></span>
+    <textarea name="${esc(item.key)}" maxlength="500" rows="2" required>${esc(item.value)}</textarea>
+    ${item.key === 'model_not_found' ? '<small><code>{model}</code> 会替换为实际模型名。</small>' : ''}
   </label>`).join('');
 }
 
 async function load(page = currentPage, force = false) {
-  if (loading.has(page)) return loading.get(page);
+  const group = resource(page);
+  if (loading.has(group)) return loading.get(group);
   const endpoint = {
     keys: '/admin/api/keys',
     models: '/admin/api/models',
     usage: `/admin/api/usage${force ? '?refresh=1' : ''}`,
     cache: '/admin/api/cache',
     settings: '/admin/api/error-messages',
-  }[page];
-  $(`#page-${page}`).setAttribute('aria-busy', 'true');
-  if (page === currentPage) $('#refresh').disabled = true;
+  }[group];
+  const sections = group === 'keys' ? [$('#page-upstream'), $('#page-client')] : [$(`#page-${page}`)];
+  sections.forEach((section) => section.setAttribute('aria-busy', 'true'));
+  if (group === resource(currentPage)) $('#refresh').disabled = true;
   const job = api(endpoint).then((data) => {
-    Object.assign(state, data);
+    if (group === 'usage') {
+      const { upstreamKeys, ...usage } = data;
+      Object.assign(state, usage, { quotaKeys: upstreamKeys });
+    } else Object.assign(state, data);
     showApp();
-    render(page);
+    if (group === 'keys') {
+      renderKeys('upstream');
+      renderKeys('client');
+    } else render(page);
   }).catch((error) => {
     if (!$('#app-view').classList.contains('hidden')) toast(error.message);
   }).finally(() => {
-    loading.delete(page);
-    $(`#page-${page}`).setAttribute('aria-busy', 'false');
-    $('#refresh').disabled = loading.has(currentPage);
+    loading.delete(group);
+    sections.forEach((section) => section.setAttribute('aria-busy', 'false'));
+    $('#refresh').disabled = loading.has(resource(currentPage));
   });
-  loading.set(page, job);
+  loading.set(group, job);
   return job;
 }
 
-$('#login-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
+function selectPage(page) {
+  currentPage = page;
+  document.querySelectorAll('#nav button').forEach((button) => {
+    const active = button.dataset.page === page;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('.page').forEach((section) => section.classList.toggle('hidden', section.id !== `page-${page}`));
+  $('#page-title').textContent = pages[page];
+  $('[data-open="upstream-dialog"]').classList.toggle('hidden', page !== 'upstream');
+  $('[data-open="client-dialog"]').classList.toggle('hidden', page !== 'client');
+  $('#sync-models').classList.toggle('hidden', page !== 'models');
+  $('#refresh').disabled = loading.has(resource(page));
+  setMenu(false);
+  window.scrollTo(0, 0);
+  load(page);
+  if (page === 'client') refreshClientLoad();
+}
+
+function setMenu(open) {
+  $('#app-view').classList.toggle('menu-open', open);
+  $('#menu-toggle').setAttribute('aria-expanded', String(open));
+  $('#menu-toggle').setAttribute('aria-label', open ? '关闭导航' : '打开导航');
+}
+
+$('#menu-toggle').addEventListener('click', () => setMenu($('#menu-toggle').getAttribute('aria-expanded') !== 'true'));
+$('#nav').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-page]');
+  if (button) selectPage(button.dataset.page);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && $('#app-view').classList.contains('menu-open')) {
+    setMenu(false);
+    $('#menu-toggle').focus();
+  }
+});
+
+const themePref = matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  const selected = localStorage.getItem('ollama-console-theme');
+  const dark = selected ? selected === 'dark' : themePref.matches;
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  $('#theme span').textContent = dark ? '浅色模式' : '深色模式';
+}
+applyTheme();
+themePref.addEventListener('change', applyTheme);
+$('#theme').addEventListener('click', () => {
+  localStorage.setItem('ollama-console-theme', document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  applyTheme();
+});
+
+for (const type of ['upstream', 'client']) $(`#${type}-filter`).addEventListener('input', () => renderKeys(type));
+$('.section-tabs').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-usage-view]');
+  if (!button) return;
+  const view = button.dataset.usageView;
+  document.querySelectorAll('[data-usage-view]').forEach((item) => {
+    item.classList.toggle('active', item === button);
+    item.setAttribute('aria-pressed', String(item === button));
+  });
+  for (const tab of ['calls', 'quota']) $(`#usage-${tab}`).classList.toggle('hidden', view !== tab);
+});
+
+function ask(title, message, buttonLabel) {
+  const dialog = $('#confirm-dialog');
+  $('#confirm-title').textContent = title;
+  $('#confirm-text').textContent = message;
+  $('#confirm-button').textContent = buttonLabel;
+  dialog.returnValue = '';
+  return new Promise((resolve) => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
+    dialog.showModal();
+  });
+}
+
+function bindForm(form, submit) {
+  $(form).addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.submitter || event.currentTarget.querySelector('[type="submit"]');
+    if (button.disabled) return;
+    const target = event.currentTarget;
+    button.disabled = true;
+    try { await submit(target); }
+    catch (error) { toast(error.message); }
+    finally { button.disabled = false; }
+  });
+}
+
+bindForm('#login-form', async () => {
   $('#login-error').textContent = '';
   try {
     await api('/admin/api/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) });
     $('#password').value = '';
-    await load('keys');
+    await load(currentPage);
   } catch (error) { $('#login-error').textContent = error.message; }
 });
 
-$('#nav').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-page]');
-  if (!button) return;
-  currentPage = button.dataset.page;
-  document.querySelectorAll('#nav button').forEach((item) => {
-    item.classList.toggle('active', item === button);
-    if (item === button) item.setAttribute('aria-current', 'page');
-    else item.removeAttribute('aria-current');
+const keyEndpoint = (type) => `/admin/api/${type === 'upstream' ? 'upstream' : 'client'}-keys`;
+for (const type of ['upstream', 'client']) {
+  bindForm(`#${type}-form`, async (form) => {
+    const result = await api(keyEndpoint(type), { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    form.reset();
+    form.closest('dialog').close();
+    if (type === 'client') {
+      $('#new-token').textContent = result.token;
+      $('#token-dialog').showModal();
+    } else toast('通道已添加，正在同步模型');
+    await load(type);
   });
-  document.querySelectorAll('.page').forEach((page) => page.classList.add('hidden'));
-  $(`#page-${currentPage}`).classList.remove('hidden');
-  [$('#page-title').textContent, $('#page-category').textContent, $('#page-description').textContent] = pages[currentPage];
-  $('#clear-usage').classList.toggle('hidden', !['keys', 'models', 'usage'].includes(currentPage));
-  load(currentPage).catch(() => {});
-});
+}
 
-$('.key-tabs').addEventListener('click', (event) => {
-  const button = event.target.closest('[data-key-tab]');
-  if (!button) return;
-  currentKeyTab = button.dataset.keyTab;
-  document.querySelectorAll('[data-key-tab]').forEach((item) => {
-    item.classList.toggle('active', item === button);
-    item.setAttribute('aria-pressed', String(item === button));
-  });
-  $('#key-upstream-panel').classList.toggle('hidden', currentKeyTab !== 'upstream');
-  $('#key-client-panel').classList.toggle('hidden', currentKeyTab !== 'client');
-  if (currentKeyTab === 'client') refreshClientLoad();
-});
-
-$('#upstream-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const body = Object.fromEntries(new FormData(event.target));
-  const button = event.submitter;
-  button.disabled = true;
-  try {
-    await api('/admin/api/upstream-keys', { method: 'POST', body: JSON.stringify(body) });
-    event.target.reset();
-    event.target.closest('details').open = false;
-    toast('上游通道已导入，正在同步模型');
-    await load('keys');
-  } catch (error) { toast(error.message); }
-  finally { button.disabled = false; }
-});
-
-document.addEventListener('change', async (event) => {
-  const select = event.target.closest('[data-upstream-tier]');
-  if (!select) return;
-  select.disabled = true;
-  try {
-    await api(`/admin/api/upstream-keys/${select.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ tier: select.value }) });
-    toast(select.value === 'max' ? 'MAX：最多 8 并发，按5倍权重分配' : 'PRO：最多 2 并发，按1倍权重分配');
-    await load('keys');
-  } catch (error) {
-    toast(error.message);
-    await load('keys');
+const keyDialog = $('#key-dialog');
+const keyEditForm = $('#key-edit-form');
+function editKey(type, id) {
+  const key = (type === 'upstream' ? state.upstreamKeys : state.clientKeys).find((key) => String(key.id) === id);
+  if (!key) return;
+  keyEditForm.dataset.endpoint = `${keyEndpoint(type)}/${id}`;
+  const upstream = type === 'upstream';
+  $('#key-dialog-title').textContent = upstream ? '通道设置' : '密钥设置';
+  $('#delete-key').textContent = upstream ? '删除通道' : '删除密钥';
+  $('#edit-key-name').textContent = key.label;
+  $('#edit-key-meta').textContent = [upstream && key.base_url, `•••• ${key.last4}`].filter(Boolean).join('  ·  ');
+  const fields = keyEditForm.elements;
+  fields.enabled.checked = Boolean(key.enabled);
+  const values = {
+    tier: upstream && key.tierConfigurable ? key.tier : null,
+    useProxyCache: upstream && key.proxyCacheConfigurable ? Boolean(key.use_proxy_cache) : null,
+    outputTps: upstream ? null : Number(key.output_tps) || 0,
+    allowedOrigin: upstream ? null : key.concurrency_limit ? `limit:${key.concurrency_limit}` : key.allowed_origin ? whitelist : '',
+  };
+  for (const [name, value] of Object.entries(values)) {
+    const field = fields[name];
+    field.disabled = value == null;
+    field.closest('[data-edit-field]').classList.toggle('hidden', field.disabled);
+    if (value == null) continue;
+    if (field.type === 'checkbox') field.checked = value;
+    else field.value = value;
   }
-});
+  keyDialog.showModal();
+}
 
-$('#client-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const body = Object.fromEntries(new FormData(event.target));
-  const button = event.submitter;
+bindForm('#key-edit-form', async (form) => {
+  const body = Object.fromEntries(new FormData(form));
+  body.enabled = form.elements.enabled.checked;
+  if (!form.elements.useProxyCache.disabled) body.useProxyCache = form.elements.useProxyCache.checked;
+  await api(form.dataset.endpoint, { method: 'PATCH', body: JSON.stringify(body) });
+  keyDialog.close();
+  toast('设置已保存');
+  await load(currentPage);
+});
+$('#delete-key').addEventListener('click', async () => {
+  if (!(await ask('确定删除？', `“${$('#edit-key-name').textContent}”将被删除，此操作无法撤销。`, '删除'))) return;
+  const button = $('#delete-key');
   button.disabled = true;
   try {
-    const result = await api('/admin/api/client-keys', { method: 'POST', body: JSON.stringify(body) });
-    event.target.reset();
-    event.target.closest('details').open = false;
-    $('#new-token').textContent = result.token;
-    $('#token-dialog').showModal();
-    await load('keys');
+    await api(keyEditForm.dataset.endpoint, { method: 'DELETE' });
+    keyDialog.close();
+    toast('已删除');
+    await load(currentPage);
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }
 });
 
 document.addEventListener('click', async (event) => {
+  const open = event.target.closest('[data-open]');
+  if (open) return document.getElementById(open.dataset.open).showModal();
+  const close = event.target.closest('[data-close]');
+  if (close) return close.closest('dialog').close();
   const button = event.target.closest('[data-action]');
   if (!button) return;
-  const { action, id, enabled } = button.dataset;
-  if (action.startsWith('delete') && !confirm('确定删除吗？此操作不能撤销。')) return;
+  const { action, id, model, sourceUrl } = button.dataset;
+  if (action.startsWith('edit-')) return editKey(action.slice(5), id);
   button.disabled = true;
-  const label = button.textContent;
-  if (action.startsWith('test')) button.textContent = '测试中…';
+  const label = button.querySelector('span');
+  const previousText = label.textContent;
+  if (action.startsWith('test')) label.textContent = '测试中…';
   try {
     if (action === 'test-model') {
-      await api('/admin/api/models/test', { method: 'POST', body: JSON.stringify({ model: button.dataset.model, sourceUrl: button.dataset.sourceUrl }) });
-      toast(`${button.dataset.model} 回复正常`);
-      return;
+      await api('/admin/api/models/test', { method: 'POST', body: JSON.stringify({ model, sourceUrl }) });
+      toast(`${model} 回复正常`);
+    } else if (action === 'test-upstream') {
+      await api(`${keyEndpoint('upstream')}/${id}/test`, { method: 'POST' });
+      toast('通道连接正常');
+      await load('upstream');
+    } else if (action === 'copy-client') {
+      const result = await api(`${keyEndpoint('client')}/${id}/reveal`, { method: 'POST' });
+      await copyToken(result.token);
     }
-    const upstream = action.includes('upstream');
-    const base = upstream ? '/admin/api/upstream-keys' : '/admin/api/client-keys';
-    if (action === 'toggle-upstream-cache') {
-      const useProxyCache = enabled === 'true';
-      await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ useProxyCache }) });
-      toast(useProxyCache ? '代理缓存已开启，缓存页总开关开启时生效' : '已恢复透传上游缓存统计');
-      await load('keys');
-      return;
-    }
-    if (action === 'copy-client') {
-      const result = await api(`${base}/${id}/reveal`, { method: 'POST' });
-      await navigator.clipboard.writeText(result.token);
-      toast('下游密钥已复制');
-      return;
-    }
-    if (action === 'save-client-rate') {
-      const input = button.closest('tr').querySelector('[data-client-rate]');
-      const rate = Math.min(1000, Math.max(0, Math.floor(Number(input.value) || 0)));
-      await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ outputTps: rate }) });
-      toast(rate ? `已限制为约 ${rate} token/s` : '已关闭 Token 减速器');
-      await load('keys');
-      return;
-    }
-    if (action === 'save-client-origin') {
-      const mode = button.closest('tr').querySelector('[data-client-origin]').value;
-      await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ allowedOrigin: mode }) });
-      const limit = Number(mode.split(':')[1]) || 0;
-      toast(limit ? `已启用白名单并限制为 ${limit} 并发` : mode ? '已启用白名单' : '已关闭白名单');
-      await load('keys');
-      return;
-    }
-    if (action.startsWith('toggle')) await api(`${base}/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: enabled === 'true' }) });
-    if (action.startsWith('delete')) await api(`${base}/${id}`, { method: 'DELETE' });
-    if (action === 'test-upstream') await api(`${base}/${id}/test`, { method: 'POST' });
-    toast(action === 'test-upstream' ? '密钥连接正常' : '操作已完成');
-    await load('keys');
-  } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = label; }
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; label.textContent = previousText; }
 });
+
+async function copyToken(token) {
+  if (!token) return toast('没有可复制的密钥');
+  try {
+    await navigator.clipboard.writeText(token);
+    toast('密钥已复制');
+  } catch {
+    $('#new-token').textContent = token;
+    if (!$('#token-dialog').open) $('#token-dialog').showModal();
+    toast('自动复制失败，请选中密钥手动复制');
+  }
+}
+$('#copy-token').addEventListener('click', () => copyToken($('#new-token').textContent));
+$('#token-dialog').addEventListener('close', () => { $('#new-token').textContent = ''; });
 
 $('#sync-models').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
-  button.textContent = '同步中…';
+  button.querySelector('span').textContent = '同步中…';
   try { const result = await api('/admin/api/models/sync', { method: 'POST' }); toast(`已同步 ${result.count} 个模型`); await load('models'); }
   catch (error) { toast(error.message); }
-  finally { button.disabled = false; button.textContent = '立即同步'; }
+  finally { button.disabled = false; button.querySelector('span').textContent = '同步模型'; }
 });
 $('#error-settings-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -388,7 +490,7 @@ $('#error-settings-form').addEventListener('submit', async (event) => {
   finally { if (button) button.disabled = false; }
 });
 $('#reset-error-messages').addEventListener('click', async (event) => {
-  if (!confirm('确定恢复全部默认错误提示吗？')) return;
+  if (!(await ask('恢复默认提示？', '所有自定义错误提示都会被替换。', '恢复默认'))) return;
   const button = event.currentTarget;
   button.disabled = true;
   try {
@@ -400,12 +502,12 @@ $('#reset-error-messages').addEventListener('click', async (event) => {
   finally { button.disabled = false; }
 });
 $('#clear-usage').addEventListener('click', async (event) => {
-  if (!confirm('确定清空全部统计数据吗？密钥和缓存账本不会被删除。')) return;
+  if (!(await ask('清空统计？', '将清空累计调用和 Token 统计，密钥和缓存会保留。', '清空统计'))) return;
   const button = event.currentTarget;
   button.disabled = true;
   try {
     await api('/admin/api/usage', { method: 'DELETE' });
-    if (currentPage === 'usage' || currentPage === 'keys') await load(currentPage);
+    await load('usage');
     toast('统计数据已清空');
   } catch (error) { toast(error.message); } finally { button.disabled = false; }
 });
@@ -422,7 +524,7 @@ $('#cache-settings-form').addEventListener('submit', async (event) => {
   finally { controls.forEach((item) => { item.disabled = false; }); }
 });
 $('#clear-cache').addEventListener('click', async (event) => {
-  if (!confirm('确定清空本地缓存账本吗？不会影响密钥、统计和上游官方缓存。')) return;
+  if (!(await ask('清空本地缓存？', '只清空本地前缀账本，统计和上游缓存会保留。', '清空缓存'))) return;
   const button = event.currentTarget;
   button.disabled = true;
   try {
@@ -434,25 +536,26 @@ $('#clear-cache').addEventListener('click', async (event) => {
 });
 $('#refresh').addEventListener('click', () => load(currentPage, true));
 $('#usage-model-filter').addEventListener('change', renderModelUsage);
-$('#logout').addEventListener('click', async () => { await api('/admin/api/logout', { method: 'POST' }); showLogin(); });
-$('#copy-token').addEventListener('click', async () => { await navigator.clipboard.writeText($('#new-token').textContent); toast('已复制'); });
-$('#close-dialog').addEventListener('click', () => $('#token-dialog').close());
+$('#logout').addEventListener('click', async () => {
+  try { await api('/admin/api/logout', { method: 'POST' }); showLogin(); }
+  catch (error) { toast(error.message); }
+});
 
 let clientLoadPending = false;
 async function refreshClientLoad() {
-  if (clientLoadPending || document.hidden || currentPage !== 'keys' || currentKeyTab !== 'client' || $('#app-view').classList.contains('hidden')) return;
+  if (clientLoadPending || document.hidden || currentPage !== 'client' || $('#app-view').classList.contains('hidden')) return;
   clientLoadPending = true;
   try {
     const { clientInFlight = {} } = await api('/admin/api/client-load');
     document.querySelectorAll('[data-client-load]').forEach((item) => {
       const count = Number(clientInFlight[item.dataset.clientLoad]) || 0;
-      item.textContent = item.dataset.enabled === 'true' ? `${count} 并发` : `暂停 · ${count} 并发`;
+      item.textContent = clientLoadLabel(count, item.dataset.enabled === 'true');
     });
   } catch { /* 登录状态由 api() 统一处理 */ }
   finally { clientLoadPending = false; }
 }
 
-load('keys');
+load();
 setInterval(refreshClientLoad, 2_000);
 setInterval(() => {
   if (!$('#app-view').classList.contains('hidden') && currentPage === 'usage') load(currentPage);
