@@ -7,8 +7,19 @@ const tokenM = (value) => `${((Number(value) || 0) / 1_000_000).toFixed(1)} M`;
 const time = (value) => value ? new Date(Number(value)).toLocaleString('zh-CN', { hour12: false }) : '—';
 const whitelist = 'https://sta1n156.github.io';
 const accessOptions = '<option value="">不限制来源</option><option value="' + whitelist + '">白名单</option>'
-  + [3, 5, 10, 15, 20, 25, 30, 35, 40, 120].map((limit) => `<option value="limit:${limit}">白名单 + ${limit} 并发</option>`).join('');
-for (const field of document.querySelectorAll('select[name="allowedOrigin"]')) field.innerHTML = accessOptions;
+  + '<option value="limited">白名单 + 并发限制</option>';
+function syncClientLimit(form) {
+  const access = form.elements.allowedOrigin;
+  const slider = form.querySelector('[data-client-limit]');
+  const control = slider.closest('label');
+  control.classList.toggle('hidden', access.disabled || access.value !== 'limited');
+  control.querySelector('strong').textContent = slider.value;
+}
+for (const field of document.querySelectorAll('select[name="allowedOrigin"]')) {
+  field.innerHTML = accessOptions;
+  field.addEventListener('change', () => syncClientLimit(field.form));
+  field.form.querySelector('[data-client-limit]').addEventListener('input', () => syncClientLimit(field.form));
+}
 
 const state = { upstreamKeys: [], clientKeys: [], quotaKeys: [], clientModelUsage: [], models: [], errorMessages: [], cache: {} };
 const pages = { upstream: '上游通道', client: '下游密钥', models: '模型目录', usage: '额度用量', cache: '缓存', settings: '设置' };
@@ -360,12 +371,18 @@ bindForm('#login-form', async () => {
 });
 
 const keyEndpoint = (type) => `/admin/api/${type === 'upstream' ? 'upstream' : 'client'}-keys`;
+function keyBody(form) {
+  const body = Object.fromEntries(new FormData(form));
+  if (body.allowedOrigin === 'limited') body.allowedOrigin = `limit:${form.querySelector('[data-client-limit]').value}`;
+  return body;
+}
 for (const type of ['upstream', 'client']) {
   bindForm(`#${type}-form`, async (form) => {
-    const result = await api(keyEndpoint(type), { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    const result = await api(keyEndpoint(type), { method: 'POST', body: JSON.stringify(keyBody(form)) });
     form.reset();
     form.closest('dialog').close();
     if (type === 'client') {
+      syncClientLimit(form);
       $('#new-token').textContent = result.token;
       $('#token-dialog').showModal();
     } else toast('通道已添加，正在同步模型');
@@ -386,11 +403,16 @@ function editKey(type, id) {
   $('#edit-key-meta').textContent = [upstream && key.base_url, `•••• ${key.last4}`].filter(Boolean).join('  ·  ');
   const fields = keyEditForm.elements;
   fields.enabled.checked = Boolean(key.enabled);
+  const slider = keyEditForm.querySelector('[data-client-limit]');
+  const limit = Number(key.concurrency_limit) || 0;
+  const legacyLimit = limit > 0 && limit < Number(slider.min);
+  fields.allowedOrigin.innerHTML = accessOptions + (legacyLimit ? `<option value="limit:${limit}">白名单 + ${limit} 并发（原设置）</option>` : '');
+  slider.value = limit >= Number(slider.min) ? limit : slider.defaultValue;
   const values = {
     tier: upstream && key.tierConfigurable ? key.tier : null,
     useProxyCache: upstream && key.proxyCacheConfigurable ? Boolean(key.use_proxy_cache) : null,
     outputTps: upstream ? null : Number(key.output_tps) || 0,
-    allowedOrigin: upstream ? null : key.concurrency_limit ? `limit:${key.concurrency_limit}` : key.allowed_origin ? whitelist : '',
+    allowedOrigin: upstream ? null : legacyLimit ? `limit:${limit}` : limit ? 'limited' : key.allowed_origin ? whitelist : '',
   };
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
@@ -400,11 +422,12 @@ function editKey(type, id) {
     if (field.type === 'checkbox') field.checked = value;
     else field.value = value;
   }
+  syncClientLimit(keyEditForm);
   keyDialog.showModal();
 }
 
 bindForm('#key-edit-form', async (form) => {
-  const body = Object.fromEntries(new FormData(form));
+  const body = keyBody(form);
   body.enabled = form.elements.enabled.checked;
   if (!form.elements.useProxyCache.disabled) body.useProxyCache = form.elements.useProxyCache.checked;
   await api(form.dataset.endpoint, { method: 'PATCH', body: JSON.stringify(body) });
